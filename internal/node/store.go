@@ -16,7 +16,7 @@ type Store struct {
 }
 
 func NewStore(dir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "chunks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "chunks"), 0o777); err != nil {
 		return nil, err
 	}
 	return &Store{dir: dir, manifests: make(map[dht.ID]*Manifest)}, nil
@@ -27,7 +27,7 @@ func (s *Store) chunkPath(id dht.ID) string {
 }
 
 func (s *Store) PutChunkID(id dht.ID, data []byte) error {
-	return os.WriteFile(s.chunkPath(id), data, 0o644)
+	return os.WriteFile(s.chunkPath(id), data, 0o666)
 }
 
 func (s *Store) GetChunk(id dht.ID) ([]byte, error) {

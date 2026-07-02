@@ -190,7 +190,7 @@ const (
 // loadOrCreateIdentity 从 dir 读取证书/私钥；不存在则生成并落盘。
 // 返回 TLS 证书以及由公钥派生的稳定 NodeID。
 func loadOrCreateIdentity(dir string) (tls.Certificate, ID, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return tls.Certificate{}, ID{}, err
 	}
 	certPath := filepath.Join(dir, certFile)
@@ -213,7 +213,7 @@ func loadOrCreateIdentity(dir string) (tls.Certificate, ID, error) {
 	if err != nil {
 		return tls.Certificate{}, ID{}, err
 	}
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	if err := os.WriteFile(certPath, certPEM, 0o666); err != nil {
 		return tls.Certificate{}, ID{}, err
 	}
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil { // 私钥权限收紧
