@@ -34,7 +34,7 @@ type Transport struct {
 	handler   Handler
 
 	mu    sync.Mutex
-	conns map[string]quic.Connection
+	conns map[string]*quic.Conn
 }
 
 // NewTransport 在 certDir 中加载或创建持久化的 TLS 身份。
@@ -66,7 +66,7 @@ func NewTransport(listenAddr, certDir string) (*Transport, error) {
 			MinVersion:         tls.VersionTLS13,
 		},
 		quicConf: quicConf,
-		conns:    make(map[string]quic.Connection),
+		conns:    make(map[string]*quic.Conn),
 	}, nil
 }
 
@@ -84,7 +84,7 @@ func (t *Transport) Serve(ctx context.Context) {
 	}
 }
 
-func (t *Transport) serveConn(ctx context.Context, conn quic.Connection) {
+func (t *Transport) serveConn(ctx context.Context, conn *quic.Conn) {
 	for {
 		stream, err := conn.AcceptStream(ctx)
 		if err != nil {
@@ -94,7 +94,7 @@ func (t *Transport) serveConn(ctx context.Context, conn quic.Connection) {
 	}
 }
 
-func (t *Transport) serveStream(conn quic.Connection, stream quic.Stream) {
+func (t *Transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
 	defer stream.Close()
 	stream.SetDeadline(time.Now().Add(30 * time.Second))
 	req, err := readMsg(stream)
@@ -137,7 +137,7 @@ func (t *Transport) Send(ctx context.Context, addr string, msg *Message) (*Messa
 	return readMsg(stream)
 }
 
-func (t *Transport) getConn(ctx context.Context, addr string) (quic.Connection, error) {
+func (t *Transport) getConn(ctx context.Context, addr string) (*quic.Conn, error) {
 	t.mu.Lock()
 	c, ok := t.conns[addr]
 	if ok {
@@ -170,7 +170,7 @@ func (t *Transport) dropConn(addr string) {
 
 // PeerID 从一条已建立连接的对端证书反算其 NodeID，
 // 用于校验 "宣称的 ID" 是否与公钥匹配（自认证）。
-func PeerID(conn quic.Connection) (ID, error) {
+func PeerID(conn *quic.Conn) (ID, error) {
 	certs := conn.ConnectionState().TLS.PeerCertificates
 	if len(certs) == 0 {
 		return ID{}, errNoPeerCert
