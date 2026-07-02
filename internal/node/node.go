@@ -28,7 +28,6 @@ type Node struct {
 
 // New 创建节点。listenAddr 同时作为对外通告地址，
 // 单机测试请使用形如 127.0.0.1:9000 的具体地址。
-// New 创建节点。listenAddr 同时作为对外通告地址。
 func New(listenAddr, dataDir string) (*Node, error) {
 	certDir := filepath.Join(dataDir, "identity")
 	t, err := dht.NewTransport(listenAddr, certDir)
@@ -96,7 +95,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 			data := make([]byte, nr)
 			copy(data, buf[:nr])
 			id := dht.HashID(data)
-			if err := n.store.PutChunkID(id, data); err != nil {
+			if err := n.store.PutChunk(id, data); err != nil {
 				return dht.ID{}, nil, err
 			}
 			chunks = append(chunks, id)
@@ -181,7 +180,7 @@ func (n *Node) Download(ctx context.Context, fileHashHex, out string) error {
 		if got == nil {
 			return fmt.Errorf("failed to fetch chunk %d/%d", i+1, len(m.Chunks))
 		}
-		_ = n.store.PutChunkID(cid, got)
+		_ = n.store.PutChunk(cid, got)
 		if _, err := f.WriteAt(got, offset); err != nil {
 			return err
 		}

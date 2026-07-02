@@ -26,7 +26,7 @@ func (s *Store) chunkPath(id dht.ID) string {
 	return filepath.Join(s.dir, "chunks", id.String())
 }
 
-func (s *Store) PutChunkID(id dht.ID, data []byte) error {
+func (s *Store) PutChunk(id dht.ID, data []byte) error {
 	return os.WriteFile(s.chunkPath(id), data, 0o666)
 }
 
