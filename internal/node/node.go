@@ -41,7 +41,7 @@ func New(listenAddr, dataDir string) (*Node, error) {
 	kad := dht.NewKademlia(self, t)
 
 	// 新增：FIND_VALUE 未命中 DHT 缓存时，从本地文件库返回 manifest。
-	// 这样"持有文件的节点"都能应答清单，而不只是离 fileHash 最近的 K 个节点。
+	// 这样"持有文件的节点"都能应答清单，而不只是离 fileID 最近的 K 个节点。
 	kad.SetValueSource(func(key dht.ID) ([]byte, bool) {
 		if m, ok := store.GetManifest(key); ok {
 			if b, err := json.Marshal(m); err == nil {
@@ -93,7 +93,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 		if nr > 0 {
 			data := make([]byte, nr)
 			copy(data, buf[:nr])
-			id := dht.HashID(data)
+			id := ChunkID(data)
 			if err := n.store.PutChunk(id, data); err != nil {
 				return dht.ID{}, nil, err
 			}
@@ -108,7 +108,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	}
 
 	m := &Manifest{Name: filepath.Base(path), Size: fi.Size(), ChunkSize: defaultChunkSize, Chunks: chunks}
-	fh := m.FileHash()
+	fh := m.FileID()
 	n.store.AddManifest(m)
 
 	mb, _ := json.Marshal(m)
@@ -117,9 +117,9 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	return fh, m, nil
 }
 
-// Download 根据 fileHash 还原文件到 out。
-func (n *Node) Download(ctx context.Context, fileHashHex, out string) error {
-	fh, err := dht.ParseID(fileHashHex)
+// Download 根据 fileID 还原文件到 out。
+func (n *Node) Download(ctx context.Context, fileIDHex, out string) error {
+	fh, err := dht.ParseID(fileIDHex)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (n *Node) Download(ctx context.Context, fileHashHex, out string) error {
 			if rerr != nil || resp == nil || resp.Error != "" || !resp.Found {
 				continue
 			}
-			if dht.HashID(resp.Value) != cid { // 完整性校验
+			if ChunkID(resp.Value) != cid { // 完整性校验
 				continue
 			}
 			got = resp.Value
@@ -218,7 +218,7 @@ func (n *Node) StartRepublish(ctx context.Context, interval time.Duration) {
 
 func (n *Node) republish() {
 	for _, m := range n.store.Manifests() {
-		fh := m.FileHash()
+		fh := m.FileID()
 		if mb := mustJSON(m); mb != nil {
 			n.kad.StoreValue(fh, mb)
 		}

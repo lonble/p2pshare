@@ -15,8 +15,11 @@ type Manifest struct {
 	Chunks    []dht.ID `json:"chunks"` // 每块 SHA-256
 }
 
-// FileHash 是文件的全局唯一键（即"磁力链接"），由 Manifest 内容派生。
-func (m *Manifest) FileHash() dht.ID {
+// ChunkID 计算内容寻址用的键。
+func ChunkID(data []byte) dht.ID { return dht.ID(sha256.Sum256(data)) }
+
+// FileID 是文件的全局唯一键（即"磁力链接"），由 Manifest 内容派生。
+func (m *Manifest) FileID() dht.ID {
 	h := sha256.New()
 	h.Write([]byte(m.Name))
 	_ = binary.Write(h, binary.BigEndian, m.Size)

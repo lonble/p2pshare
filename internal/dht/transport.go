@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -169,16 +170,10 @@ func (t *Transport) dropConn(addr string) {
 func PeerID(conn *quic.Conn) (ID, error) {
 	certs := conn.ConnectionState().TLS.PeerCertificates
 	if len(certs) == 0 {
-		return ID{}, errNoPeerCert
+		return ID{}, fmt.Errorf("no peer certificate")
 	}
 	return nodeIDFromPublicKey(certs[0].PublicKey)
 }
-
-var errNoPeerCert = &certError{"no peer certificate"}
-
-type certError struct{ msg string }
-
-func (e *certError) Error() string { return e.msg }
 
 // ---------- 证书持久化与身份派生 ----------
 

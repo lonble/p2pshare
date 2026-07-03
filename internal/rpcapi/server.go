@@ -79,7 +79,7 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		var out []map[string]interface{}
 		for _, m := range s.node.Manifests() {
 			out = append(out, map[string]interface{}{
-				"fileHash": m.FileHash().String(),
+				"fileID": m.FileID().String(),
 				"name":     m.Name,
 				"size":     m.Size,
 				"chunks":   len(m.Chunks),
@@ -98,17 +98,17 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		if err != nil {
 			return nil, &rpcError{-32000, err.Error()}
 		}
-		return map[string]interface{}{"fileHash": fh.String(), "manifest": m}, nil
+		return map[string]interface{}{"fileID": fh.String(), "manifest": m}, nil
 
 	case "download":
 		var p struct {
-			FileHash string `json:"fileHash"`
+			FileID string `json:"fileID"`
 			Output   string `json:"output"`
 		}
-		if err := json.Unmarshal(params, &p); err != nil || p.FileHash == "" || p.Output == "" {
-			return nil, &rpcError{-32602, "invalid params: need {fileHash, output}"}
+		if err := json.Unmarshal(params, &p); err != nil || p.FileID == "" || p.Output == "" {
+			return nil, &rpcError{-32602, "invalid params: need {fileID, output}"}
 		}
-		if err := s.node.Download(context.Background(), p.FileHash, p.Output); err != nil {
+		if err := s.node.Download(context.Background(), p.FileID, p.Output); err != nil {
 			return nil, &rpcError{-32000, err.Error()}
 		}
 		return map[string]interface{}{"ok": true, "output": p.Output}, nil

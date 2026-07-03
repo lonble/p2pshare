@@ -41,7 +41,7 @@ func (s *Store) HasChunk(id dht.ID) bool {
 
 func (s *Store) AddManifest(m *Manifest) {
 	s.mu.Lock()
-	s.manifests[m.FileHash()] = m
+	s.manifests[m.FileID()] = m
 	s.mu.Unlock()
 }
 
