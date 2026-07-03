@@ -85,6 +85,9 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	if err != nil {
 		return dht.ID{}, nil, err
 	}
+	if !fi.Mode().IsRegular() {
+		return dht.ID{}, nil, fmt.Errorf("%s is not a regular file", path)
+	}
 
 	var chunks []dht.ID
 	buf := make([]byte, defaultChunkSize)
@@ -117,40 +120,38 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	return fh, m, nil
 }
 
-// Download 根据 fileID 还原文件到 out。
-func (n *Node) Download(ctx context.Context, fileIDHex, out string) error {
-	fh, err := dht.ParseID(fileIDHex)
-	if err != nil {
-		return err
-	}
-
+// Download 根据 fileID 还原文件到 outdir。
+func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (string, error) {
 	var m Manifest
-	if mm, ok := n.store.GetManifest(fh); ok {
+	if mm, ok := n.store.GetManifest(fileID); ok {
 		m = *mm
 	} else {
-		data, ok := n.kad.FindValue(fh)
+		data, ok := n.kad.FindValue(fileID)
 		if !ok {
-			return errors.New("manifest not found in DHT")
+			return "", errors.New("manifest not found in DHT")
 		}
 		if err := json.Unmarshal(data, &m); err != nil {
-			return err
+			return "", err
 		}
 		n.store.AddManifest(&m)
 	}
 
-	providers := n.kad.FindProviders(fh)
+	providers := n.kad.FindProviders(fileID)
 	if len(providers) == 0 {
-		return errors.New("no providers found for this file")
+		return "", errors.New("no providers found for this file")
 	}
 	rand.Shuffle(len(providers), func(i, j int) { providers[i], providers[j] = providers[j], providers[i] })
 
-	f, err := os.Create(out)
+	if err := os.MkdirAll(outdir, 0o777); err != nil {
+		return "", err
+	}
+	f, err := os.Create(filepath.Join(outdir, m.Name))
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer f.Close()
 	if err := f.Truncate(m.Size); err != nil {
-		return err
+		return "", err
 	}
 
 	for i, cid := range m.Chunks {
@@ -158,7 +159,7 @@ func (n *Node) Download(ctx context.Context, fileIDHex, out string) error {
 		if n.store.HasChunk(cid) {
 			data, _ := n.store.GetChunk(cid)
 			if _, err := f.WriteAt(data, offset); err != nil {
-				return err
+				return "", err
 			}
 			continue
 		}
@@ -177,26 +178,20 @@ func (n *Node) Download(ctx context.Context, fileIDHex, out string) error {
 			break
 		}
 		if got == nil {
-			return fmt.Errorf("failed to fetch chunk %d/%d", i+1, len(m.Chunks))
+			return "", fmt.Errorf("failed to fetch chunk %d/%d", i+1, len(m.Chunks))
 		}
-		_ = n.store.PutChunk(cid, got)
+		if err := n.store.PutChunk(cid, got); err != nil {
+			return "", err
+		}
 		if _, err := f.WriteAt(got, offset); err != nil {
-			return err
+			return "", err
 		}
 	}
 
-	n.kad.StoreValue(fh, mustJSON(&m)) // 新增：主动承担清单的再分发
-	n.kad.Announce(fh)                 // 原有：宣告自己成为 provider
-	return nil
-}
-
-// mustJSON 在序列化失败时返回 nil（StoreValue 容忍空值，下次 republish 会重试）。
-func mustJSON(v any) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	return b
+	mb, _ := json.Marshal(&m)
+	n.kad.StoreValue(fileID, mb) // 新增：主动承担清单的再分发
+	n.kad.Announce(fileID)       // 原有：宣告自己成为 provider
+	return m.Name, nil
 }
 
 // StartRepublish 周期性地把本地所有文件的清单与 provider 记录重新发布到 DHT。
@@ -219,9 +214,8 @@ func (n *Node) StartRepublish(ctx context.Context, interval time.Duration) {
 func (n *Node) republish() {
 	for _, m := range n.store.Manifests() {
 		fh := m.FileID()
-		if mb := mustJSON(m); mb != nil {
-			n.kad.StoreValue(fh, mb)
-		}
+		mb, _ := json.Marshal(&m)
+		n.kad.StoreValue(fh, mb)
 		n.kad.Announce(fh)
 	}
 }

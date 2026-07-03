@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 
+	"p2pshare/internal/dht"
 	"p2pshare/internal/node"
 )
 
@@ -79,10 +81,10 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		var out []map[string]interface{}
 		for _, m := range s.node.Manifests() {
 			out = append(out, map[string]interface{}{
-				"fileID": m.FileID().String(),
-				"name":     m.Name,
-				"size":     m.Size,
-				"chunks":   len(m.Chunks),
+				"id":     m.FileID().String(),
+				"name":   m.Name,
+				"size":   m.Size,
+				"chunks": len(m.Chunks),
 			})
 		}
 		return out, nil
@@ -98,20 +100,25 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		if err != nil {
 			return nil, &rpcError{-32000, err.Error()}
 		}
-		return map[string]interface{}{"fileID": fh.String(), "manifest": m}, nil
+		return map[string]interface{}{"id": fh.String(), "manifest": m}, nil
 
 	case "download":
 		var p struct {
-			FileID string `json:"fileID"`
-			Output   string `json:"output"`
+			FileID string `json:"id"`
+			OutDir string `json:"outdir"`
 		}
-		if err := json.Unmarshal(params, &p); err != nil || p.FileID == "" || p.Output == "" {
-			return nil, &rpcError{-32602, "invalid params: need {fileID, output}"}
+		if err := json.Unmarshal(params, &p); err != nil || p.FileID == "" || p.OutDir == "" {
+			return nil, &rpcError{-32602, "invalid params: need {id, outdir}"}
 		}
-		if err := s.node.Download(context.Background(), p.FileID, p.Output); err != nil {
+		id, err := dht.ParseID(p.FileID)
+		if err != nil {
 			return nil, &rpcError{-32000, err.Error()}
 		}
-		return map[string]interface{}{"ok": true, "output": p.Output}, nil
+		filename, err := s.node.Download(context.Background(), id, p.OutDir)
+		if err != nil {
+			return nil, &rpcError{-32000, err.Error()}
+		}
+		return map[string]interface{}{"ok": true, "output": filepath.Join(p.OutDir, filename)}, nil
 
 	default:
 		return nil, &rpcError{-32601, "method not found"}
