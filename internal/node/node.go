@@ -19,11 +19,10 @@ const defaultChunkSize = 256 * 1024
 
 // Node 把 Kademlia DHT 与文件存储/传输组合起来。
 type Node struct {
-	kad       *dht.Kademlia
-	t         *dht.Transport
-	store     *Store
-	self      dht.Contact
-	chunkSize int
+	kad   *dht.Kademlia
+	t     *dht.Transport
+	store *Store
+	self  dht.Contact
 }
 
 // New 创建节点。listenAddr 同时作为对外通告地址，
@@ -52,7 +51,7 @@ func New(listenAddr, dataDir string) (*Node, error) {
 		return nil, false
 	})
 
-	n := &Node{kad: kad, t: t, store: store, self: self, chunkSize: defaultChunkSize}
+	n := &Node{kad: kad, t: t, store: store, self: self}
 	t.SetHandler(n.handle)
 	return n, nil
 }
@@ -88,7 +87,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	}
 
 	var chunks []dht.ID
-	buf := make([]byte, n.chunkSize)
+	buf := make([]byte, defaultChunkSize)
 	for {
 		nr, rerr := io.ReadFull(f, buf)
 		if nr > 0 {
@@ -108,7 +107,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 		}
 	}
 
-	m := &Manifest{Name: filepath.Base(path), Size: fi.Size(), ChunkSize: n.chunkSize, Chunks: chunks}
+	m := &Manifest{Name: filepath.Base(path), Size: fi.Size(), ChunkSize: defaultChunkSize, Chunks: chunks}
 	fh := m.FileHash()
 	n.store.AddManifest(m)
 
