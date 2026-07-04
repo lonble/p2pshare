@@ -67,10 +67,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *rpcError) {
 	switch method {
 	case "status":
-		self := s.node.Self()
+		id := s.node.Myid()
 		return map[string]interface{}{
-			"id":    self.ID.String(),
-			"addr":  self.Addr,
+			"id":    id.String(),
 			"peers": len(s.node.Peers()),
 		}, nil
 

@@ -22,10 +22,10 @@ type Node struct {
 	kad   *dht.Kademlia
 	t     *dht.Transport
 	store *Store
-	self  dht.Contact
+	myid  dht.ID
 }
 
-// New 创建节点。listenAddr 同时作为对外通告地址，
+// New 创建节点
 // 单机测试请使用形如 127.0.0.1:9000 的具体地址。
 func New(listenAddr, dataDir string) (*Node, error) {
 	certDir := filepath.Join(dataDir, "identity")
@@ -37,8 +37,8 @@ func New(listenAddr, dataDir string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	self := dht.Contact{ID: t.NodeID(), Addr: listenAddr}
-	kad := dht.NewKademlia(self, t)
+	myid := t.NodeID()
+	kad := dht.NewKademlia(myid, t)
 
 	// 新增：FIND_VALUE 未命中 DHT 缓存时，从本地文件库返回 manifest。
 	// 这样"持有文件的节点"都能应答清单，而不只是离 fileID 最近的 K 个节点。
@@ -51,7 +51,7 @@ func New(listenAddr, dataDir string) (*Node, error) {
 		return nil, false
 	})
 
-	n := &Node{kad: kad, t: t, store: store, self: self}
+	n := &Node{kad: kad, t: t, store: store, myid: myid}
 	t.SetHandler(n.handle)
 	return n, nil
 }
@@ -61,16 +61,16 @@ func (n *Node) handle(remote net.Addr, msg *dht.Message) *dht.Message {
 	if msg.Type == dht.TypeGetChunk {
 		data, err := n.store.GetChunk(msg.Key)
 		if err != nil {
-			return &dht.Message{Type: dht.TypeGetChunk, Sender: n.self, Error: "chunk not found"}
+			return &dht.Message{Type: dht.TypeGetChunk, Sender: n.myid, Error: "chunk not found"}
 		}
-		return &dht.Message{Type: dht.TypeGetChunk, Sender: n.self, Key: msg.Key, Value: data, Found: true}
+		return &dht.Message{Type: dht.TypeGetChunk, Sender: n.myid, Key: msg.Key, Value: data, Found: true}
 	}
 	return n.kad.HandleRPC(remote, msg)
 }
 
 func (n *Node) Start(ctx context.Context)                     { go n.t.Serve(ctx) }
 func (n *Node) Bootstrap(ctx context.Context, addrs []string) { _ = n.kad.Bootstrap(ctx, addrs) }
-func (n *Node) Self() dht.Contact                             { return n.self }
+func (n *Node) Myid() dht.ID                                  { return n.myid }
 func (n *Node) Peers() []dht.Contact                          { return n.kad.Peers() }
 func (n *Node) Manifests() []*Manifest                        { return n.store.Manifests() }
 
@@ -166,7 +166,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 		var got []byte
 		for _, p := range providers {
 			cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			resp, rerr := n.t.Send(cctx, p.Addr, &dht.Message{Type: dht.TypeGetChunk, Key: cid, Sender: n.self})
+			resp, rerr := n.t.Send(cctx, p.Addr, &dht.Message{Type: dht.TypeGetChunk, Key: cid, Sender: n.myid})
 			cancel()
 			if rerr != nil || resp == nil || resp.Error != "" || !resp.Found {
 				continue

@@ -28,7 +28,7 @@ type Contact struct {
 // Message 同时用于请求和响应，保持线协议简单。
 type Message struct {
 	Type      string    `json:"type"`
-	Sender    Contact   `json:"sender"`              // 发送方，用于更新接收方路由表
+	Sender    ID        `json:"sender"`              // 发送方，用于更新接收方路由表
 	Target    ID        `json:"target"`              // FIND_NODE 目标
 	Key       ID        `json:"key"`                 // STORE/FIND_VALUE/PROVIDER/CHUNK 的键
 	Value     []byte    `json:"value,omitempty"`     // 值或块数据（JSON 中 base64）

@@ -29,7 +29,7 @@ type providerEntry struct {
 type ValueSource func(key ID) ([]byte, bool)
 
 type Kademlia struct {
-	self Contact
+	myid ID
 	t    *Transport
 	rt   *routingTable
 
@@ -53,11 +53,11 @@ func (kad *Kademlia) getValueOrLocal(k ID) ([]byte, bool) {
 	return nil, false
 }
 
-func NewKademlia(self Contact, t *Transport) *Kademlia {
+func NewKademlia(myid ID, t *Transport) *Kademlia {
 	kad := &Kademlia{
-		self:      self,
+		myid:      myid,
 		t:         t,
-		rt:        newRoutingTable(self.ID, k),
+		rt:        newRoutingTable(myid, k),
 		values:    make(map[ID]valueEntry),
 		providers: make(map[ID]map[string]providerEntry),
 	}
@@ -70,21 +70,22 @@ func NewKademlia(self Contact, t *Transport) *Kademlia {
 	return kad
 }
 
-func (kad *Kademlia) Self() Contact    { return kad.self }
 func (kad *Kademlia) Peers() []Contact { return kad.rt.allContacts() }
 
 func (kad *Kademlia) sendRPC(ctx context.Context, c Contact, m *Message) (*Message, error) {
-	m.Sender = kad.self
+	m.Sender = kad.myid
 	return kad.t.Send(ctx, c.Addr, m)
 }
 
 // ---------- 服务端：处理收到的 RPC ----------
 
-func (kad *Kademlia) HandleRPC(_ net.Addr, msg *Message) *Message {
-	if msg.Sender.Addr != "" {
-		kad.rt.update(msg.Sender)
+func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
+	contact := Contact{}
+	if !msg.Sender.isZero() {
+		contact = Contact{ID: msg.Sender, Addr: remote.String()}
+		kad.rt.update(contact)
 	}
-	resp := &Message{Sender: kad.self, Type: msg.Type}
+	resp := &Message{Sender: kad.myid, Type: msg.Type}
 	switch msg.Type {
 	case TypePing:
 		resp.Type = TypePong
@@ -99,7 +100,7 @@ func (kad *Kademlia) HandleRPC(_ net.Addr, msg *Message) *Message {
 			resp.Contacts = kad.rt.closest(msg.Key, k)
 		}
 	case TypeAddProvider:
-		kad.addProvider(msg.Key, msg.Sender)
+		kad.addProvider(msg.Key, contact)
 	case TypeGetProviders:
 		resp.Providers = kad.localProviders(msg.Key)
 		resp.Contacts = kad.rt.closest(msg.Key, k)
@@ -249,13 +250,13 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 func (kad *Kademlia) Bootstrap(ctx context.Context, addrs []string) error {
 	for _, a := range addrs {
 		cctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		resp, err := kad.t.Send(cctx, a, &Message{Type: TypePing, Sender: kad.self})
+		resp, err := kad.t.Send(cctx, a, &Message{Type: TypePing, Sender: kad.myid})
 		cancel()
 		if err == nil && resp != nil {
-			kad.rt.update(resp.Sender)
+			kad.rt.update(Contact{ID: resp.Sender, Addr: a})
 		}
 	}
-	kad.lookup(kad.self.ID, modeFindNode) // 自查找以填充路由表
+	kad.lookup(kad.myid, modeFindNode) // 自查找以填充路由表
 	return nil
 }
 
@@ -283,7 +284,8 @@ func (kad *Kademlia) FindValue(key ID) ([]byte, bool) {
 }
 
 func (kad *Kademlia) Announce(key ID) int {
-	kad.addProvider(key, kad.self)
+	// need to fix
+	// kad.addProvider(key, kad.myid)
 	out := kad.lookup(key, modeFindNode)
 	n := 0
 	for _, c := range out.closest {

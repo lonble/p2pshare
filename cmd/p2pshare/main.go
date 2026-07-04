@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:9000", "QUIC 监听/通告地址")
+	addr := flag.String("addr", ":9000", "QUIC 监听/通告地址")
 	rpcAddr := flag.String("rpc", "127.0.0.1:8000", "HTTP JSON-RPC 地址")
 	bootstrap := flag.String("bootstrap", "", "逗号分隔的引导节点地址")
 	dataDir := flag.String("data", "./p2pdata", "数据目录")
@@ -50,8 +50,8 @@ func main() {
 		}
 	}()
 
-	self := n.Self()
-	log.Printf("node started  id=%s  quic=%s", self.ID.String()[:16], self.Addr)
+	id := n.Myid()
+	log.Printf("node started  id=%s  quic=%s", id.String(), *addr)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
