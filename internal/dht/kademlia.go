@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	k           = 20 // bucket 大小 / 冗余副本数
-	alpha       = 3  // 查找并发度
+	k           = 20 // bucket size / redundant replica count
+	alpha       = 3  // lookup concurrency
 	rpcTimeout  = 5 * time.Second
 	valueTTL    = time.Hour
 	providerTTL = 30 * time.Minute
@@ -36,14 +36,14 @@ type Kademlia struct {
 	providers map[ID]map[Contact]time.Time
 
 	getChunk   GetChunk
-	localValue ValueSource // 新增
+	localValue ValueSource
 }
 
 func (kad *Kademlia) SetChunkHandler(handler GetChunk) { kad.getChunk = handler }
 
 func (kad *Kademlia) SetValueSource(f ValueSource) { kad.localValue = f }
 
-// getValueOrLocal 先查 DHT 存储，未命中再问注入的本地值源。
+// Check the DHT storage first, and falls back to the injected local value source on a miss.
 func (kad *Kademlia) getValueOrLocal(k ID) ([]byte, bool) {
 	if v, ok := kad.getValue(k); ok {
 		return v, true
@@ -77,7 +77,7 @@ func (kad *Kademlia) SendRPC(ctx context.Context, c Contact, m *Message) (*Messa
 	return kad.t.send(ctx, c, m)
 }
 
-// ---------- 服务端：处理收到的 RPC ----------
+// ---------- Server: handle received RPC ----------
 
 func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
 	contact := Contact{}
@@ -94,7 +94,7 @@ func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
 	case TypeStore:
 		kad.putValue(msg.Key, msg.Value)
 	case TypeFindValue:
-		if v, ok := kad.getValueOrLocal(msg.Key); ok { // 改这里
+		if v, ok := kad.getValueOrLocal(msg.Key); ok {
 			resp.Value, resp.Found = v, true
 		} else {
 			resp.Contacts = kad.rt.closest(msg.Key, k)
@@ -117,7 +117,7 @@ func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
 	return resp
 }
 
-// ---------- 本地存储 ----------
+// ---------- Local Storage ----------
 
 func (kad *Kademlia) putValue(k ID, v []byte) {
 	kad.mu.Lock()
@@ -171,7 +171,7 @@ func (kad *Kademlia) localProviders(k ID) []Contact {
 	return out
 }
 
-// ---------- 迭代查找（Kademlia 核心算法） ----------
+// ---------- Iterative Lookup (Kademlia Core Algorithm) ----------
 
 type lookupMode int
 
@@ -209,7 +209,7 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 	for {
 		batch := sl.selectAlpha(alpha)
 		if len(batch) == 0 {
-			break // 最近 K 个节点均已查询，收敛
+			break // Convergence, closest K nodes have all been queried
 		}
 		type result struct {
 			from Contact
@@ -239,7 +239,7 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 			}
 			if mode == modeProviders {
 				for _, p := range r.msg.Providers {
-					// Addr == "" 表示被请求节点本身提供此文件
+					// Addr == "" indicates the requested node itself provides this file
 					if p.Addr == "" {
 						p.Addr = r.from.Addr
 					}
@@ -255,7 +255,7 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 	return out
 }
 
-// ---------- 对外 DHT 操作 ----------
+// ---------- External DHT Operations ----------
 
 func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) error {
 	for _, c := range contacts {
@@ -266,7 +266,7 @@ func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) error {
 			kad.rt.update(c)
 		}
 	}
-	kad.lookup(kad.MyID(), modeFindNode) // 自查找以填充路由表
+	kad.lookup(kad.MyID(), modeFindNode) // Self-lookup to populate the routing table
 	return nil
 }
 
@@ -286,7 +286,7 @@ func (kad *Kademlia) StoreValue(key ID, value []byte) int {
 }
 
 func (kad *Kademlia) FindValue(key ID) ([]byte, bool) {
-	if v, ok := kad.getValueOrLocal(key); ok { // 改这里
+	if v, ok := kad.getValueOrLocal(key); ok {
 		return v, true
 	}
 	out := kad.lookup(key, modeFindValue)
@@ -294,7 +294,7 @@ func (kad *Kademlia) FindValue(key ID) ([]byte, bool) {
 }
 
 func (kad *Kademlia) Announce(key ID) int {
-	// Addr: "" 表示节点本身提供此文件
+	// Addr: "" indicates the node itself provides this file
 	kad.addProvider(key, Contact{ID: kad.MyID(), Addr: ""})
 	out := kad.lookup(key, modeFindNode)
 	n := 0
@@ -321,7 +321,7 @@ func (kad *Kademlia) FindProviders(key ID) []Contact {
 	return slices.Collect(maps.Keys(res))
 }
 
-// ---------- shortlist：迭代查找的候选集 ----------
+// ---------- shortlist: Candidate Set for Iterative Lookup ----------
 
 const (
 	stPending = iota
@@ -364,7 +364,7 @@ func (s *shortlist) sortItems() {
 	sort.Slice(s.items, func(i, j int) bool { return s.items[i].dist.less(s.items[j].dist) })
 }
 
-// selectAlpha 在"最近 K 个未失败节点"窗口内挑选至多 a 个待查询节点。
+// Pick up to a pending query nodes within the "closest K non-failed nodes" window.
 func (s *shortlist) selectAlpha(a int) []Contact {
 	s.sortItems()
 	var out []Contact

@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-// RPC 消息类型。
+// RPC message types.
 const (
 	TypePing         = "PING"
 	TypePong         = "PONG"
@@ -16,24 +16,24 @@ const (
 	TypeStore        = "STORE"
 	TypeAddProvider  = "ADD_PROVIDER"
 	TypeGetProviders = "GET_PROVIDERS"
-	TypeGetChunk     = "GET_CHUNK" // 文件层使用
+	TypeGetChunk     = "GET_CHUNK" // Used by the file layer
 )
 
-// Message 同时用于请求和响应，保持线协议简单。
+// Message is used for both requests and responses to keep the wire protocol simple.
 type Message struct {
 	Type      string    `json:"type"`
-	Sender    ID        `json:"sender"`              // 发送方，用于更新接收方路由表
-	Key       ID        `json:"key,omitempty"`       // FIND_NODE/STORE/FIND_VALUE/PROVIDER/CHUNK 的键
-	Value     []byte    `json:"value,omitempty"`     // 值或块数据（JSON 中 base64）
-	Contacts  []Contact `json:"contacts,omitempty"`  // 返回的更近节点
-	Providers []Contact `json:"providers,omitempty"` // 返回的 provider 列表
+	Sender    ID        `json:"sender"`              // Sender, used to update the receiver's routing table
+	Key       ID        `json:"key,omitempty"`       // Key for FIND_NODE/STORE/FIND_VALUE/PROVIDER/CHUNK
+	Value     []byte    `json:"value,omitempty"`     // Value or chunk data (base64 in JSON)
+	Contacts  []Contact `json:"contacts,omitempty"`  // Returned closer nodes
+	Providers []Contact `json:"providers,omitempty"` // Returned provider list
 	Found     bool      `json:"found,omitempty"`
 	Error     string    `json:"error,omitempty"`
 }
 
-const maxMsgSize = 8 << 20 // 8 MiB，足够容纳 base64 后的单块
+const maxMsgSize = 8 << 20 // 8 MiB, large enough to contain a single base64-encoded chunk
 
-// writeMsg 以 [4字节大端长度][JSON] 的帧格式写入一条消息。
+// writeMsg writes a message in a [4-byte big-endian length][JSON] framed format.
 func writeMsg(w io.Writer, m *Message) error {
 	data, err := json.Marshal(m)
 	if err != nil {

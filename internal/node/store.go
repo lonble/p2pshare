@@ -8,7 +8,7 @@ import (
 	"p2pshare/internal/dht"
 )
 
-// Store 在磁盘上保存块，在内存中保存 Manifest 索引。
+// Store saves chunks on disk and maintains the Manifest index in memory.
 type Store struct {
 	dir       string
 	mu        sync.RWMutex

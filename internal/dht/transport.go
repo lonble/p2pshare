@@ -22,19 +22,19 @@ import (
 
 const alpn = "p2pshare/1.0"
 
-// handler 处理收到的请求并返回响应。
+// handler processes received requests and returns a response.
 type handler func(remote net.Addr, msg *Message) *Message
 
-// Contact 是一个可达节点。
+// Contact represents a reachable node.
 type Contact struct {
 	ID   ID     `json:"id"`
 	Addr string `json:"addr"`
 }
 
-// transport 基于 QUIC 实现请求-响应式 RPC，并按地址池化连接。
+// transport implements request-response RPC based on QUIC, pooling connections by address.
 type transport struct {
 	qt      *quic.Transport
-	myid    ID // 由证书公钥派生，重启后稳定
+	myid    ID // Derived from the certificate public key, remains stable after reboot
 	handler handler
 
 	mu    sync.Mutex
@@ -46,7 +46,7 @@ var quicConf = &quic.Config{
 	KeepAlivePeriod: 20 * time.Second,
 }
 
-// startTransport 在 certDir 中加载或创建持久化的 TLS 身份。
+// Initialize certificates, generate the Node ID, and listen on the DHT network.
 func startTransport(listenAddr, certDir string, ctx context.Context) (*transport, error) {
 	cert, myid, err := loadOrCreateIdentity(certDir)
 	if err != nil {
@@ -116,7 +116,7 @@ func (t *transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
 	writeMsg(stream, resp)
 }
 
-// send 向 addr 发起一次请求并等待响应。
+// send initiates a request to addr and waits for a response.
 func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message, error) {
 	msg.Sender = t.myid
 	conn, err := t.getConn(ctx, c)
@@ -169,7 +169,8 @@ func (t *transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) 
 	}
 
 	tlsClient := &tls.Config{
-		InsecureSkipVerify: true, // 自签名；身份由 NodeID=hash(pubkey) 自认证，见 VerifyPeer
+		// Self-signed; identity is self-certified via NodeID=hash(pubkey), see VerifyPeer
+		InsecureSkipVerify: true,
 		NextProtos:         []string{alpn},
 		MinVersion:         tls.VersionTLS13,
 		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -210,15 +211,15 @@ func (t *transport) dropConn(addr string) {
 	t.mu.Unlock()
 }
 
-// ---------- 证书持久化与身份派生 ----------
+// ---------- Certificate Persistence and Identity Derivation ----------
 
 const (
 	certFile = "node_cert.pem"
 	keyFile  = "node_key.pem"
 )
 
-// loadOrCreateIdentity 从 dir 读取证书/私钥；不存在则生成并落盘。
-// 返回 TLS 证书以及由公钥派生的稳定 NodeID。
+// loadOrCreateIdentity reads the certificate/private key from dir; if they do not exist, it generates and persists them.
+// Returns the TLS certificate along with a stable NodeID derived from the public key.
 func loadOrCreateIdentity(dir string) (tls.Certificate, ID, error) {
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return tls.Certificate{}, ID{}, err
@@ -236,7 +237,7 @@ func loadOrCreateIdentity(dir string) (tls.Certificate, ID, error) {
 				return cert, id, nil
 			}
 		}
-		// 文件损坏则重新生成，覆盖旧文件。
+		// Regenerate if files are corrupted, overwriting old files.
 	}
 
 	cert, certPEM, keyPEM, err := generateCert()
@@ -246,7 +247,7 @@ func loadOrCreateIdentity(dir string) (tls.Certificate, ID, error) {
 	if err := os.WriteFile(certPath, certPEM, 0o666); err != nil {
 		return tls.Certificate{}, ID{}, err
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil { // 私钥权限收紧
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil { // Tightened private key permissions
 		return tls.Certificate{}, ID{}, err
 	}
 	id, err := nodeIDFromCert(cert)
@@ -261,7 +262,7 @@ func generateCert() (tls.Certificate, []byte, []byte, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour), // 长期有效，身份稳定
+		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour), // Valid for long-term, stable identity
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
@@ -280,7 +281,7 @@ func generateCert() (tls.Certificate, []byte, []byte, error) {
 	return cert, certPEM, keyPEM, nil
 }
 
-// nodeIDFromCert 解析叶证书并由其公钥派生 NodeID。
+// nodeIDFromCert parses the leaf certificate and derives NodeID from its public key.
 func nodeIDFromCert(cert tls.Certificate) (ID, error) {
 	leaf := cert.Leaf
 	if leaf == nil {
@@ -293,7 +294,7 @@ func nodeIDFromCert(cert tls.Certificate) (ID, error) {
 	return nodeIDFromPublicKey(leaf.PublicKey)
 }
 
-// nodeIDFromPublicKey: NodeID = SHA-256(SubjectPublicKeyInfo)。
+// nodeIDFromPublicKey: NodeID = SHA-256(SubjectPublicKeyInfo).
 func nodeIDFromPublicKey(pub any) (ID, error) {
 	spki, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {

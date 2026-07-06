@@ -1,6 +1,6 @@
-- `manifest` 需要持久化，而且目前看起来文件和块的逻辑是有问题的
-- 在当前代码库写一个 cmd 的客户端作为后备
-- 目前仅宣称 `Manifest` ，这是不够的，每个 `Chunk` 也应该宣称。这应该是两个并行的系统，能相互作用。每下载一个 `Chunk` 就自动宣称该 `Chunk`。宣称 `Manifest` 不需要有全部 `Chunk`，但删除 `Manifest` 应该同时删除 `Chunk`
-- 目前的架构有两套平行的查找机制，`Manifest` 直接存储到附近节点，内容采用宣称的方式，使用和 `Manifest` 相同的键，并且默认宣称文件的节点拥有全部chunk。纯脱裤子放屁，`Manifest` 和 `Chunk` 在 `dht` 看起来应该没有任何区别，全部采用宣称的方式，由 `node` 进行逻辑管理
-- 把发布、下载等操作都转为异步，可选新建同步操作
-- 目前的分块基本等于没分，需要多个分块并行下载
+- `manifest` needs to be persisted, and currently the logic for files and chunks seems to be problematic
+- Write a cmd client in the current codebase as a fallback
+- Currently only announcing `Manifest`, which is not enough; each `Chunk` should also be announced. These should be two parallel systems that can interact. Each downloaded `Chunk` should automatically announce that `Chunk`. Announcing a `Manifest` does not require having all `Chunks`, but deleting a `Manifest` should delete the `Chunks` at the same time
+- The current architecture has two parallel lookup mechanisms: `Manifest` is stored directly to nearby nodes, while content uses the announcemnet method with the same key as the `Manifest`, assuming by default that the node announcing the file has all chunks. This is completely redundant. `Manifest` and `Chunk` should look no different to the `dht`; both should use the declaration method, with logical management handled by the `node`
+- Create asynchronous versions of operations like publish and download
+- The current chunking is practically useless; multiple chunks need to be downloaded in parallel

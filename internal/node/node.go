@@ -16,14 +16,13 @@ import (
 
 const defaultChunkSize = 256 * 1024
 
-// Node 把 Kademlia DHT 与文件存储/传输组合起来。
+// Node combines Kademlia DHT with file storage/transfer.
 type Node struct {
 	kad   *dht.Kademlia
 	store *Store
 }
 
-// StartNode 创建节点
-// 单机测试请使用形如 127.0.0.1:9000 的具体地址。
+// Create a node and start the DHT network.
 func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
 	store, err := NewStore(dataDir)
 	if err != nil {
@@ -36,8 +35,8 @@ func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
 	}
 	kad.SetChunkHandler(store.GetChunk)
 
-	// 新增：FIND_VALUE 未命中 DHT 缓存时，从本地文件库返回 manifest。
-	// 这样"持有文件的节点"都能应答清单，而不只是离 fileID 最近的 K 个节点。
+	// When FIND_VALUE misses the DHT cache, return manifest from local file store.
+	// This allows any node holding the file to respond to the manifest request, instead of only the K nodes closest to fileID.
 	kad.SetValueSource(func(key dht.ID) ([]byte, bool) {
 		if m, ok := store.GetManifest(key); ok {
 			if b, err := json.Marshal(m); err == nil {
@@ -58,7 +57,7 @@ func (n *Node) Bootstrap(ctx context.Context, contacts []dht.Contact) error {
 	return n.kad.Bootstrap(ctx, contacts)
 }
 
-// Publish 切分文件、入库、把 Manifest 存入 DHT 并宣告 provider。
+// Publish splits the file, stores it, saves the Manifest to the DHT, and announces provider.
 func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,7 +103,7 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	return fh, m, nil
 }
 
-// Download 根据 fileID 还原文件到 outdir。
+// Download restores the file to outdir based on fileID.
 func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (string, error) {
 	var m Manifest
 	if mm, ok := n.store.GetManifest(fileID); ok {
@@ -165,7 +164,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 				}
 				value = resp.Value
 			}
-			if ChunkID(value) != cid { // 完整性校验
+			if ChunkID(value) != cid { // Integrity verification
 				continue
 			}
 			got = value
@@ -184,13 +183,13 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 
 	n.store.AddManifest(&m)
 	mb, _ := json.Marshal(&m)
-	n.kad.StoreValue(fileID, mb) // 新增：主动承担清单的再分发
-	n.kad.Announce(fileID)       // 原有：宣告自己成为 provider
+	n.kad.StoreValue(fileID, mb) // Participate in the redistribution of the manifest
+	n.kad.Announce(fileID)       // Announce self as provider
 	return m.Name, nil
 }
 
-// StartRepublish 周期性地把本地所有文件的清单与 provider 记录重新发布到 DHT。
-// interval 应明显小于 valueTTL(1h) 与 providerTTL(30m)，建议 15 分钟。
+// StartRepublish periodically publishes all local file manifests and provider records back to the DHT.
+// interval should be significantly smaller than valueTTL (1h) and providerTTL (30m), 15 minutes is recommended.
 func (n *Node) StartRepublish(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)

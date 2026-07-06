@@ -10,7 +10,7 @@ import (
 	"p2pshare/internal/node"
 )
 
-// Server 暴露 JSON-RPC 2.0 over HTTP，供独立 GUI 调用。
+// Server exposes JSON-RPC 2.0 over HTTP for standalone GUI invocation.
 type Server struct {
 	node *node.Node
 }
@@ -161,5 +161,5 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	json.NewEncoder(w).Encode(v)
 }

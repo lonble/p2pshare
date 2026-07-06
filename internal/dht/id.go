@@ -8,8 +8,8 @@ import (
 	"strconv"
 )
 
-// idLen 是节点/内容标识的字节长度（256 bit），与 SHA-256 输出对齐，
-// 使节点 ID 与内容键共享同一个 keyspace。
+// idLen is the byte length of the node/content identifier (256-bit), aligning with the output of SHA-256,
+// allowing node IDs and content keys to share the same keyspace.
 const idLen = 32
 
 type ID [idLen]byte
@@ -46,7 +46,7 @@ func ParseID(s string) (ID, error) {
 
 func (id ID) String() string { return hex.EncodeToString(id[:]) }
 
-// xor 返回 XOR 距离度量结果。
+// Return the result of the XOR distance metric.
 func (a ID) xor(b ID) ID {
 	var r ID
 	for i := range a {
@@ -55,10 +55,10 @@ func (a ID) xor(b ID) ID {
 	return r
 }
 
-// less 把 ID 当作大端无符号整数比较，用于按距离排序。
+// Compare IDs as big-endian unsigned integers, used for sorting by distance.
 func (id ID) less(o ID) bool { return bytes.Compare(id[:], o[:]) < 0 }
 
-// leadingZeros 返回前导零比特数（0..256），用于决定 k-bucket 下标。
+// Return the number of leading zero bits (0..256), used to determine the k-bucket index.
 func (id ID) leadingZeros() int {
 	n := 0
 	for _, b := range id {

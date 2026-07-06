@@ -15,9 +15,9 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":9000", "QUIC 监听/通告地址")
-	rpcAddr := flag.String("rpc", "127.0.0.1:8000", "HTTP JSON-RPC 地址")
-	dataDir := flag.String("data", "./p2pdata", "数据目录")
+	addr := flag.String("addr", ":9000", "QUIC listen address")
+	rpcAddr := flag.String("rpc", "127.0.0.1:8000", "HTTP JSON-RPC address")
+	dataDir := flag.String("data", "./p2pdata", "Data directory")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("create node: %v", err)
 	}
 
-	n.StartRepublish(ctx, 15*time.Minute) // 新增
+	n.StartRepublish(ctx, 15*time.Minute)
 
 	srv := &http.Server{Addr: *rpcAddr, Handler: rpcapi.New(n)}
 	go func() {
@@ -45,5 +45,5 @@ func main() {
 	<-sigCh
 	log.Println("shutting down...")
 	cancel()
-	_ = srv.Close()
+	srv.Close()
 }
