@@ -15,8 +15,6 @@ type Server struct {
 	node *node.Node
 }
 
-func New(n *node.Node) *Server { return &Server{node: n} }
-
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
@@ -25,8 +23,8 @@ type rpcRequest struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    rpcErrorCode `json:"code"`
+	Message string       `json:"message"`
 }
 
 type rpcResponse struct {
@@ -36,6 +34,32 @@ type rpcResponse struct {
 	ID      interface{} `json:"id"`
 }
 
+type rpcErrorCode int
+
+const (
+	rpcParseError     rpcErrorCode = -32700
+	rpcMethodNotFound rpcErrorCode = -32601
+	rpcInvalidParams  rpcErrorCode = -32602
+	rpcServerError    rpcErrorCode = -32000
+)
+
+var rpcErrorMap = map[rpcErrorCode]string{
+	rpcParseError:     "Parse Error",
+	rpcMethodNotFound: "Method Not Found",
+	rpcInvalidParams:  "Invalid Params",
+	rpcServerError:    "Server Error",
+}
+
+func newRpcError(code rpcErrorCode, msg string) *rpcError {
+	e := &rpcError{Code: code, Message: rpcErrorMap[code]}
+	if msg != "" {
+		e.Message += ": " + msg
+	}
+	return e
+}
+
+func New(n *node.Node) *Server { return &Server{node: n} }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -44,13 +68,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		http.Error(w, "POST Only", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, rpcResponse{JSONRPC: "2.0", Error: &rpcError{-32700, "parse error"}})
+		writeJSON(w, rpcResponse{JSONRPC: "2.0", Error: newRpcError(rpcParseError, "")})
 		return
 	}
 
@@ -80,10 +104,11 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		var out []map[string]interface{}
 		for _, m := range s.node.Manifests() {
 			out = append(out, map[string]interface{}{
-				"id":     m.FileID().String(),
-				"name":   m.Name,
-				"size":   m.Size,
-				"chunks": len(m.Chunks),
+				"id":         m.FileID().String(),
+				"name":       m.Name,
+				"size":       m.Size,
+				"chunk_size": m.ChunkSize,
+				"chunks":     len(m.Chunks),
 			})
 		}
 		return out, nil
@@ -93,11 +118,11 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil || p.Path == "" {
-			return nil, &rpcError{-32602, "invalid params: need {path}"}
+			return nil, newRpcError(rpcInvalidParams, "need {path}")
 		}
 		fh, m, err := s.node.Publish(p.Path)
 		if err != nil {
-			return nil, &rpcError{-32000, err.Error()}
+			return nil, newRpcError(rpcServerError, err.Error())
 		}
 		return map[string]interface{}{"id": fh.String(), "manifest": m}, nil
 
@@ -107,30 +132,30 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 			OutDir string `json:"outdir"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil || p.FileID == "" {
-			return nil, &rpcError{-32602, "invalid params: need {id, outdir}"}
+			return nil, newRpcError(rpcInvalidParams, "need {id, outdir}")
 		}
 		id, err := dht.ParseID(p.FileID)
 		if err != nil {
-			return nil, &rpcError{-32000, err.Error()}
+			return nil, newRpcError(rpcServerError, err.Error())
 		}
 		filename, err := s.node.Download(context.Background(), id, p.OutDir)
 		if err != nil {
-			return nil, &rpcError{-32000, err.Error()}
+			return nil, newRpcError(rpcServerError, err.Error())
 		}
 		return map[string]interface{}{"ok": true, "output": filepath.Join(p.OutDir, filename)}, nil
 
 	case "bootstrap":
 		var p []dht.Contact
 		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, &rpcError{-32602, "invalid params: need [{id, addr}]"}
+			return nil, newRpcError(rpcInvalidParams, "need [{id, addr}]")
 		}
 		err := s.node.Bootstrap(context.Background(), p)
 		if err != nil {
-			return nil, &rpcError{-32000, err.Error()}
+			return nil, newRpcError(rpcServerError, err.Error())
 		}
 		return map[string]interface{}{"ok": true}, nil
 	default:
-		return nil, &rpcError{-32601, "method not found"}
+		return nil, newRpcError(rpcMethodNotFound, "")
 	}
 }
 
