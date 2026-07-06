@@ -1,6 +1,4 @@
-- 把 *transport.go* 中关于节点的部分全部转移到 `node`，所有方法私有化。transport.go 应该是 `dht` 包的内部工具。`node` 不应该直接调用 *transport.go* 中的任何方法
 - `manifest` 需要持久化，而且目前看起来文件和块的逻辑是有问题的
-- `main` 里的东西太多了，良好的封装不应该暴露这么多东西
 - 在当前代码库写一个 cmd 的客户端作为后备
 - 目前仅宣称 `Manifest` ，这是不够的，每个 `Chunk` 也应该宣称。这应该是两个并行的系统，能相互作用。每下载一个 `Chunk` 就自动宣称该 `Chunk`。宣称 `Manifest` 不需要有全部 `Chunk`，但删除 `Manifest` 应该同时删除 `Chunk`
 - 目前的架构有两套平行的查找机制，`Manifest` 直接存储到附近节点，内容采用宣称的方式，使用和 `Manifest` 相同的键，并且默认宣称文件的节点拥有全部chunk。纯脱裤子放屁，`Manifest` 和 `Chunk` 在 `dht` 看起来应该没有任何区别，全部采用宣称的方式，由 `node` 进行逻辑管理

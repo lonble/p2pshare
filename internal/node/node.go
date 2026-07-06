@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,25 +19,22 @@ const defaultChunkSize = 256 * 1024
 // Node 把 Kademlia DHT 与文件存储/传输组合起来。
 type Node struct {
 	kad   *dht.Kademlia
-	t     *dht.Transport
 	store *Store
-	myid  dht.ID
 }
 
 // StartNode 创建节点
 // 单机测试请使用形如 127.0.0.1:9000 的具体地址。
 func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
-	certDir := filepath.Join(dataDir, "identity")
-	t, err := dht.StartTransport(listenAddr, certDir, ctx)
-	if err != nil {
-		return nil, err
-	}
 	store, err := NewStore(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	myid := t.NodeID()
-	kad := dht.NewKademlia(myid, t)
+	certDir := filepath.Join(dataDir, "identity")
+	kad, err := dht.StartKademlia(listenAddr, certDir, ctx)
+	if err != nil {
+		return nil, err
+	}
+	kad.SetChunkHandler(store.GetChunk)
 
 	// 新增：FIND_VALUE 未命中 DHT 缓存时，从本地文件库返回 manifest。
 	// 这样"持有文件的节点"都能应答清单，而不只是离 fileID 最近的 K 个节点。
@@ -51,24 +47,11 @@ func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
 		return nil, false
 	})
 
-	n := &Node{kad: kad, t: t, store: store, myid: myid}
-	t.SetHandler(n.handle)
+	n := &Node{kad: kad, store: store}
 	return n, nil
 }
 
-// handle 区分文件层 RPC（GET_CHUNK）与 DHT RPC。
-func (n *Node) handle(remote net.Addr, msg *dht.Message) *dht.Message {
-	if msg.Type == dht.TypeGetChunk {
-		data, err := n.store.GetChunk(msg.Key)
-		if err != nil {
-			return &dht.Message{Type: dht.TypeGetChunk, Sender: n.myid, Error: "chunk not found"}
-		}
-		return &dht.Message{Type: dht.TypeGetChunk, Sender: n.myid, Key: msg.Key, Value: data, Found: true}
-	}
-	return n.kad.HandleRPC(remote, msg)
-}
-
-func (n *Node) Myid() dht.ID           { return n.myid }
+func (n *Node) MyID() dht.ID           { return n.kad.MyID() }
 func (n *Node) Peers() []dht.Contact   { return n.kad.Peers() }
 func (n *Node) Manifests() []*Manifest { return n.store.Manifests() }
 func (n *Node) Bootstrap(ctx context.Context, contacts []dht.Contact) error {
@@ -168,7 +151,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 		var got []byte
 		for _, p := range providers {
 			value := []byte{}
-			if p.ID == n.myid {
+			if p.ID == n.kad.MyID() {
 				data, err := n.store.GetChunk(cid)
 				if err != nil {
 					continue
@@ -176,7 +159,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 				value = data
 			} else {
 				cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				resp, rerr := n.t.Send(cctx, p, &dht.Message{Type: dht.TypeGetChunk, Key: cid})
+				resp, rerr := n.kad.SendRPC(cctx, p, &dht.Message{Type: dht.TypeGetChunk, Key: cid})
 				cancel()
 				if rerr != nil || resp == nil || resp.Error != "" || !resp.Found {
 					continue

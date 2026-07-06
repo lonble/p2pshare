@@ -27,19 +27,22 @@ type providerEntry struct {
 	exp time.Time
 }
 
+type GetChunk func(id ID) ([]byte, error)
 type ValueSource func(key ID) ([]byte, bool)
 
 type Kademlia struct {
-	myid ID
-	t    *Transport
-	rt   *routingTable
+	t  *transport
+	rt *routingTable
 
 	mu        sync.Mutex
 	values    map[ID]valueEntry
 	providers map[ID][]providerEntry
 
+	getChunk   GetChunk
 	localValue ValueSource // 新增
 }
+
+func (kad *Kademlia) SetChunkHandler(handler GetChunk) { kad.getChunk = handler }
 
 func (kad *Kademlia) SetValueSource(f ValueSource) { kad.localValue = f }
 
@@ -54,27 +57,27 @@ func (kad *Kademlia) getValueOrLocal(k ID) ([]byte, bool) {
 	return nil, false
 }
 
-func NewKademlia(myid ID, t *Transport) *Kademlia {
+func StartKademlia(listenAddr, certDir string, ctx context.Context) (*Kademlia, error) {
+	t, err := startTransport(listenAddr, certDir, ctx)
+	if err != nil {
+		return nil, err
+	}
 	kad := &Kademlia{
-		myid:      myid,
 		t:         t,
-		rt:        newRoutingTable(myid, k),
+		rt:        newRoutingTable(t, k),
 		values:    make(map[ID]valueEntry),
 		providers: make(map[ID][]providerEntry),
 	}
-	kad.rt.setPing(func(c Contact) bool {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		resp, err := kad.sendRPC(ctx, c, &Message{Type: TypePing})
-		return err == nil && resp != nil
-	})
-	return kad
+	t.setHandler(kad.HandleRPC)
+	return kad, nil
 }
+
+func (kad *Kademlia) MyID() ID { return kad.t.myID() }
 
 func (kad *Kademlia) Peers() []Contact { return kad.rt.allContacts() }
 
-func (kad *Kademlia) sendRPC(ctx context.Context, c Contact, m *Message) (*Message, error) {
-	return kad.t.Send(ctx, c, m)
+func (kad *Kademlia) SendRPC(ctx context.Context, c Contact, m *Message) (*Message, error) {
+	return kad.t.send(ctx, c, m)
 }
 
 // ---------- 服务端：处理收到的 RPC ----------
@@ -104,6 +107,13 @@ func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
 	case TypeGetProviders:
 		resp.Providers = kad.localProviders(msg.Key)
 		resp.Contacts = kad.rt.closest(msg.Key, k)
+	case TypeGetChunk:
+		data, err := kad.getChunk(msg.Key)
+		if err == nil {
+			resp.Value = data
+		} else {
+			resp.Error = "chunk not found"
+		}
 	default:
 		resp.Error = "unknown rpc"
 	}
@@ -209,9 +219,7 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 			go func(c Contact) {
 				ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 				defer cancel()
-				resp, err := kad.sendRPC(ctx, c, &Message{
-					Type: typeForMode(mode), Key: target,
-				})
+				resp, err := kad.t.send(ctx, c, &Message{Type: typeForMode(mode), Key: target})
 				ch <- result{c, resp, err}
 			}(c)
 		}
@@ -249,13 +257,13 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) error {
 	for _, c := range contacts {
 		cctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		resp, err := kad.t.Send(cctx, c, &Message{Type: TypePing})
+		resp, err := kad.t.send(cctx, c, &Message{Type: TypePing})
 		cancel()
 		if err == nil && resp != nil {
 			kad.rt.update(c)
 		}
 	}
-	kad.lookup(kad.myid, modeFindNode) // 自查找以填充路由表
+	kad.lookup(kad.MyID(), modeFindNode) // 自查找以填充路由表
 	return nil
 }
 
@@ -265,7 +273,7 @@ func (kad *Kademlia) StoreValue(key ID, value []byte) int {
 	n := 0
 	for _, c := range out.closest {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		_, err := kad.sendRPC(ctx, c, &Message{Type: TypeStore, Key: key, Value: value})
+		_, err := kad.t.send(ctx, c, &Message{Type: TypeStore, Key: key, Value: value})
 		cancel()
 		if err == nil {
 			n++
@@ -284,12 +292,12 @@ func (kad *Kademlia) FindValue(key ID) ([]byte, bool) {
 
 func (kad *Kademlia) Announce(key ID) int {
 	// Addr: "" 表示节点本身提供此文件
-	kad.addProvider(key, Contact{ID: kad.myid, Addr: ""})
+	kad.addProvider(key, Contact{ID: kad.MyID(), Addr: ""})
 	out := kad.lookup(key, modeFindNode)
 	n := 0
 	for _, c := range out.closest {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		_, err := kad.sendRPC(ctx, c, &Message{Type: TypeAddProvider, Key: key})
+		_, err := kad.t.send(ctx, c, &Message{Type: TypeAddProvider, Key: key})
 		cancel()
 		if err == nil {
 			n++

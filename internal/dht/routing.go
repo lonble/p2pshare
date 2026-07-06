@@ -1,30 +1,25 @@
 package dht
 
 import (
+	"context"
 	"sort"
 	"sync"
 )
 
-// pingFunc 由 Kademlia 注入，用于探测桶中最旧节点是否存活。
-type pingFunc func(Contact) bool
-
 // routingTable 是按 XOR 距离最高有效位分桶的 k-bucket 路由表。
 type routingTable struct {
-	myid    ID
+	t       *transport
 	k       int
 	mu      sync.RWMutex
 	buckets [256][]Contact // 索引 = 与 myid 的 XOR 距离前导零位数
-	ping    pingFunc
 }
 
-func newRoutingTable(myid ID, k int) *routingTable {
-	return &routingTable{myid: myid, k: k}
+func newRoutingTable(t *transport, k int) *routingTable {
+	return &routingTable{t: t, k: k}
 }
 
-func (rt *routingTable) setPing(p pingFunc) { rt.ping = p }
-
-func bucketIndex(myid, other ID) int {
-	lz := myid.xor(other).leadingZeros()
+func (rt *routingTable) bucketIndex(key ID) int {
+	lz := rt.t.myID().xor(key).leadingZeros()
 	if lz >= 256 {
 		panic("mistakenly try to add myself to the routing table")
 	}
@@ -33,10 +28,10 @@ func bucketIndex(myid, other ID) int {
 
 // update 把一个 contact 加入路由表，实现 Kademlia 的 LRU + 存活探测策略。
 func (rt *routingTable) update(c Contact) {
-	if c.ID == rt.myid || c.ID.isZero() || c.Addr == "" {
+	if c.ID == rt.t.myID() || c.ID.isZero() || c.Addr == "" {
 		return
 	}
-	idx := bucketIndex(rt.myid, c.ID)
+	idx := rt.bucketIndex(c.ID)
 
 	rt.mu.Lock()
 	b := rt.buckets[idx]
@@ -62,7 +57,10 @@ func (rt *routingTable) update(c Contact) {
 }
 
 func (rt *routingTable) tryReplace(idx int, oldest, cand Contact) {
-	alive := rt.ping != nil && rt.ping(oldest)
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	resp, err := rt.t.send(ctx, oldest, &Message{Type: TypePing})
+	alive := err == nil && resp != nil
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	b := rt.buckets[idx]

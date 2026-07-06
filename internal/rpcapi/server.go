@@ -91,7 +91,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *rpcError) {
 	switch method {
 	case "status":
-		id := s.node.Myid()
+		id := s.node.MyID()
 		return map[string]interface{}{
 			"id":    id.String(),
 			"peers": len(s.node.Peers()),

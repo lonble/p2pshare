@@ -37,7 +37,7 @@ func main() {
 		}
 	}()
 
-	id := n.Myid()
+	id := n.MyID()
 	log.Printf("node started  id=%s  quic=%s", id.String(), *addr)
 
 	sigCh := make(chan os.Signal, 1)

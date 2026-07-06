@@ -22,8 +22,8 @@ import (
 
 const alpn = "p2pshare/1.0"
 
-// Handler 处理收到的请求并返回响应。
-type Handler func(remote net.Addr, msg *Message) *Message
+// handler 处理收到的请求并返回响应。
+type handler func(remote net.Addr, msg *Message) *Message
 
 // Contact 是一个可达节点。
 type Contact struct {
@@ -31,11 +31,11 @@ type Contact struct {
 	Addr string `json:"addr"`
 }
 
-// Transport 基于 QUIC 实现请求-响应式 RPC，并按地址池化连接。
-type Transport struct {
+// transport 基于 QUIC 实现请求-响应式 RPC，并按地址池化连接。
+type transport struct {
 	qt      *quic.Transport
-	nodeID  ID // 由证书公钥派生，重启后稳定
-	handler Handler
+	myid    ID // 由证书公钥派生，重启后稳定
+	handler handler
 
 	mu    sync.Mutex
 	conns map[string]*quic.Conn
@@ -46,9 +46,9 @@ var quicConf = &quic.Config{
 	KeepAlivePeriod: 20 * time.Second,
 }
 
-// StartTransport 在 certDir 中加载或创建持久化的 TLS 身份。
-func StartTransport(listenAddr, certDir string, ctx context.Context) (*Transport, error) {
-	cert, nodeID, err := loadOrCreateIdentity(certDir)
+// startTransport 在 certDir 中加载或创建持久化的 TLS 身份。
+func startTransport(listenAddr, certDir string, ctx context.Context) (*transport, error) {
+	cert, myid, err := loadOrCreateIdentity(certDir)
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +67,10 @@ func StartTransport(listenAddr, certDir string, ctx context.Context) (*Transport
 		qt.Close()
 		return nil, err
 	}
-	t := &Transport{
-		qt:     qt,
-		nodeID: nodeID,
-		conns:  make(map[string]*quic.Conn),
+	t := &transport{
+		qt:    qt,
+		myid:  myid,
+		conns: make(map[string]*quic.Conn),
 	}
 	go func() {
 		for {
@@ -85,10 +85,10 @@ func StartTransport(listenAddr, certDir string, ctx context.Context) (*Transport
 	return t, nil
 }
 
-func (t *Transport) SetHandler(h Handler) { t.handler = h }
-func (t *Transport) NodeID() ID           { return t.nodeID }
+func (t *transport) setHandler(h handler) { t.handler = h }
+func (t *transport) myID() ID             { return t.myid }
 
-func (t *Transport) serveConn(ctx context.Context, conn *quic.Conn) {
+func (t *transport) serveConn(ctx context.Context, conn *quic.Conn) {
 	for {
 		stream, err := conn.AcceptStream(ctx)
 		if err != nil {
@@ -98,7 +98,7 @@ func (t *Transport) serveConn(ctx context.Context, conn *quic.Conn) {
 	}
 }
 
-func (t *Transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
+func (t *transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
 	defer stream.Close()
 	stream.SetDeadline(time.Now().Add(30 * time.Second))
 	req, err := readMsg(stream)
@@ -112,13 +112,13 @@ func (t *Transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
 	if resp == nil {
 		resp = &Message{Type: req.Type, Error: "no handler"}
 	}
-	resp.Sender = t.nodeID
+	resp.Sender = t.myid
 	writeMsg(stream, resp)
 }
 
-// Send 向 addr 发起一次请求并等待响应。
-func (t *Transport) Send(ctx context.Context, c Contact, msg *Message) (*Message, error) {
-	msg.Sender = t.nodeID
+// send 向 addr 发起一次请求并等待响应。
+func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message, error) {
+	msg.Sender = t.myid
 	conn, err := t.getConn(ctx, c)
 	if err != nil {
 		return nil, err
@@ -152,7 +152,7 @@ func (t *Transport) Send(ctx context.Context, c Contact, msg *Message) (*Message
 	return resp, nil
 }
 
-func (t *Transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) {
+func (t *transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) {
 	t.mu.Lock()
 	conn, ok := t.conns[c.Addr]
 	if ok {
@@ -204,7 +204,7 @@ func (t *Transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) 
 	return conn, nil
 }
 
-func (t *Transport) dropConn(addr string) {
+func (t *transport) dropConn(addr string) {
 	t.mu.Lock()
 	delete(t.conns, addr)
 	t.mu.Unlock()

@@ -23,7 +23,7 @@ const (
 type Message struct {
 	Type      string    `json:"type"`
 	Sender    ID        `json:"sender"`              // 发送方，用于更新接收方路由表
-	Key       ID        `json:"key"`                 // FIND_NODE/STORE/FIND_VALUE/PROVIDER/CHUNK 的键
+	Key       ID        `json:"key,omitempty"`       // FIND_NODE/STORE/FIND_VALUE/PROVIDER/CHUNK 的键
 	Value     []byte    `json:"value,omitempty"`     // 值或块数据（JSON 中 base64）
 	Contacts  []Contact `json:"contacts,omitempty"`  // 返回的更近节点
 	Providers []Contact `json:"providers,omitempty"` // 返回的 provider 列表
