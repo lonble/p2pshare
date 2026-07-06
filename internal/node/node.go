@@ -117,7 +117,6 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 		if err := json.Unmarshal(data, &m); err != nil {
 			return "", err
 		}
-		n.store.AddManifest(&m)
 	}
 
 	providers := n.kad.FindProviders(fileID)
@@ -161,7 +160,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 				cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				resp, rerr := n.kad.SendRPC(cctx, p, &dht.Message{Type: dht.TypeGetChunk, Key: cid})
 				cancel()
-				if rerr != nil || resp == nil || resp.Error != "" || !resp.Found {
+				if rerr != nil || resp == nil || resp.Error != "" {
 					continue
 				}
 				value = resp.Value
@@ -183,6 +182,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 		}
 	}
 
+	n.store.AddManifest(&m)
 	mb, _ := json.Marshal(&m)
 	n.kad.StoreValue(fileID, mb) // 新增：主动承担清单的再分发
 	n.kad.Announce(fileID)       // 原有：宣告自己成为 provider
