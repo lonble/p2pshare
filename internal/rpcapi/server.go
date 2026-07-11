@@ -78,7 +78,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, rerr := s.dispatch(req.Method, req.Params)
+	result, rerr := s.dispatch(r.Context(), req.Method, req.Params)
 	resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
 	if rerr != nil {
 		resp.Error = rerr
@@ -88,7 +88,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *rpcError) {
+func (s *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (interface{}, *rpcError) {
 	switch method {
 	case "status":
 		id := s.node.MyID()
@@ -102,9 +102,9 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 
 	case "listFiles":
 		var out []map[string]interface{}
-		for _, m := range s.node.Manifests() {
+		for id, m := range s.node.Manifests() {
 			out = append(out, map[string]interface{}{
-				"id":         m.FileID().String(),
+				"id":         id.String(),
 				"name":       m.Name,
 				"size":       m.Size,
 				"chunk_size": m.ChunkSize,
@@ -138,7 +138,7 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		if err != nil {
 			return nil, newRpcError(rpcServerError, err.Error())
 		}
-		filename, err := s.node.Download(context.Background(), id, p.OutDir)
+		filename, err := s.node.Download(ctx, id, p.OutDir)
 		if err != nil {
 			return nil, newRpcError(rpcServerError, err.Error())
 		}
@@ -149,11 +149,8 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, newRpcError(rpcInvalidParams, "need [{id, addr}]")
 		}
-		err := s.node.Bootstrap(context.Background(), p)
-		if err != nil {
-			return nil, newRpcError(rpcServerError, err.Error())
-		}
-		return map[string]interface{}{"ok": true}, nil
+		ok := s.node.Bootstrap(ctx, p) > 0
+		return map[string]interface{}{"ok": ok}, nil
 	default:
 		return nil, newRpcError(rpcMethodNotFound, "")
 	}

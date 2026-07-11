@@ -1,6 +1,2 @@
-- `manifest` needs to be persisted, and currently the logic for files and chunks seems to be problematic
 - Write a cmd client in the current codebase as a fallback
-- Currently only announcing `Manifest`, which is not enough; each `Chunk` should also be announced. These should be two parallel systems that can interact. Each downloaded `Chunk` should automatically announce that `Chunk`. Announcing a `Manifest` does not require having all `Chunks`, but deleting a `Manifest` should delete the `Chunks` at the same time
-- The current architecture has two parallel lookup mechanisms: `Manifest` is stored directly to nearby nodes, while content uses the announcemnet method with the same key as the `Manifest`, assuming by default that the node announcing the file has all chunks. This is completely redundant. `Manifest` and `Chunk` should look no different to the `dht`; both should use the declaration method, with logical management handled by the `node`
 - Create asynchronous versions of operations like publish and download
-- The current chunking is practically useless; multiple chunks need to be downloaded in parallel

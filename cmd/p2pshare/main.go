@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"p2pshare/internal/node"
 	"p2pshare/internal/rpcapi"
@@ -27,8 +26,6 @@ func main() {
 		log.Fatalf("create node: %v", err)
 	}
 
-	n.StartRepublish(ctx, 15*time.Minute)
-
 	srv := &http.Server{Addr: *rpcAddr, Handler: rpcapi.New(n)}
 	go func() {
 		log.Printf("JSON-RPC listening on http://%s/", *rpcAddr)
@@ -44,6 +41,6 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("shutting down...")
-	cancel()
 	srv.Close()
+	cancel()
 }

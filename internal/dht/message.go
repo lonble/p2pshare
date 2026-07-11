@@ -12,11 +12,9 @@ const (
 	TypePing         = "PING"
 	TypePong         = "PONG"
 	TypeFindNode     = "FIND_NODE"
-	TypeFindValue    = "FIND_VALUE"
-	TypeStore        = "STORE"
 	TypeAddProvider  = "ADD_PROVIDER"
 	TypeGetProviders = "GET_PROVIDERS"
-	TypeGetChunk     = "GET_CHUNK" // Used by the file layer
+	TypeGetValue     = "GET_VALUE" // Used by the file layer
 )
 
 // Message is used for both requests and responses to keep the wire protocol simple.
@@ -24,14 +22,13 @@ type Message struct {
 	Type      string    `json:"type"`
 	Sender    ID        `json:"sender"`              // Sender, used to update the receiver's routing table
 	Key       ID        `json:"key,omitempty"`       // Key for FIND_NODE/STORE/FIND_VALUE/PROVIDER/CHUNK
-	Value     []byte    `json:"value,omitempty"`     // Value or chunk data (base64 in JSON)
+	Value     []byte    `json:"value,omitempty"`     // Value data (base64 in JSON)
 	Contacts  []Contact `json:"contacts,omitempty"`  // Returned closer nodes
 	Providers []Contact `json:"providers,omitempty"` // Returned provider list
-	Found     bool      `json:"found,omitempty"`
 	Error     string    `json:"error,omitempty"`
 }
 
-const maxMsgSize = 8 << 20 // 8 MiB, large enough to contain a single base64-encoded chunk
+const maxMsgSize = 1 << 21 // 2 MiB, large enough to contain a single base64-encoded chunk
 
 // writeMsg writes a message in a [4-byte big-endian length][JSON] framed format.
 func writeMsg(w io.Writer, m *Message) error {

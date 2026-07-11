@@ -2,6 +2,7 @@ package dht
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"math/bits"
@@ -45,6 +46,9 @@ func ParseID(s string) (ID, error) {
 }
 
 func (id ID) String() string { return hex.EncodeToString(id[:]) }
+
+// ChunkID calculates the key used for content addressing.
+func ChunkID(data []byte) ID { return ID(sha256.Sum256(data)) }
 
 // Return the result of the XOR distance metric.
 func (a ID) xor(b ID) ID {

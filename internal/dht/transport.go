@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -31,14 +30,22 @@ type Contact struct {
 	Addr string `json:"addr"`
 }
 
+// struct used for QUIC connection management
+type dialCall struct {
+	conn *quic.Conn
+	err  error
+	done chan struct{}
+}
+
 // transport implements request-response RPC based on QUIC, pooling connections by address.
 type transport struct {
 	qt      *quic.Transport
 	myid    ID // Derived from the certificate public key, remains stable after reboot
 	handler handler
 
-	mu    sync.Mutex
-	conns map[string]*quic.Conn
+	mu      sync.Mutex
+	conns   map[string]*quic.Conn
+	dialing map[string]*dialCall
 }
 
 var quicConf = &quic.Config{
@@ -47,7 +54,8 @@ var quicConf = &quic.Config{
 }
 
 // Initialize certificates, generate the Node ID, and listen on the DHT network.
-func startTransport(listenAddr, certDir string, ctx context.Context) (*transport, error) {
+func startTransport(listenAddr, dataDir string, ctx context.Context) (*transport, error) {
+	certDir := filepath.Join(dataDir, "identity")
 	cert, myid, err := loadOrCreateIdentity(certDir)
 	if err != nil {
 		return nil, err
@@ -68,9 +76,10 @@ func startTransport(listenAddr, certDir string, ctx context.Context) (*transport
 		return nil, err
 	}
 	t := &transport{
-		qt:    qt,
-		myid:  myid,
-		conns: make(map[string]*quic.Conn),
+		qt:      qt,
+		myid:    myid,
+		conns:   make(map[string]*quic.Conn),
+		dialing: make(map[string]*dialCall),
 	}
 	go func() {
 		for {
@@ -99,6 +108,7 @@ func (t *transport) serveConn(ctx context.Context, conn *quic.Conn) {
 }
 
 func (t *transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
+	defer stream.CancelRead(0)
 	defer stream.Close()
 	stream.SetDeadline(time.Now().Add(30 * time.Second))
 	req, err := readMsg(stream)
@@ -134,7 +144,20 @@ func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message
 			return nil, err
 		}
 	}
+	defer stream.CancelRead(0)
 	defer stream.Close()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			stream.CancelRead(quic.StreamErrorCode(1))
+			stream.CancelWrite(quic.StreamErrorCode(1))
+		case <-done:
+		}
+	}()
+
 	if dl, ok := ctx.Deadline(); ok {
 		stream.SetDeadline(dl)
 	}
@@ -154,20 +177,49 @@ func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message
 
 func (t *transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) {
 	t.mu.Lock()
-	conn, ok := t.conns[c.Addr]
-	if ok {
+	if conn, ok := t.conns[c.Addr]; ok {
 		select {
 		case <-conn.Context().Done():
 			delete(t.conns, c.Addr)
-			ok = false
 		default:
+			t.mu.Unlock()
+			return conn, nil
 		}
 	}
-	t.mu.Unlock()
-	if ok {
-		return conn, nil
+
+	// wait for others to dial, then use its result
+	if call, ok := t.dialing[c.Addr]; ok {
+		t.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.conn, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
+	// do dial myself
+	call := &dialCall{done: make(chan struct{})}
+	t.dialing[c.Addr] = call
+	t.mu.Unlock()
+
+	conn, err := t.dial(ctx, c)
+
+	t.mu.Lock()
+	call.conn = conn
+	call.err = err
+	if err == nil {
+		t.conns[c.Addr] = conn
+	}
+	delete(t.dialing, c.Addr)
+	// notify all waiters
+	close(call.done)
+	t.mu.Unlock()
+
+	return conn, err
+}
+
+func (t *transport) dial(ctx context.Context, c Contact) (*quic.Conn, error) {
 	tlsClient := &tls.Config{
 		// Self-signed; identity is self-certified via NodeID=hash(pubkey), see VerifyPeer
 		InsecureSkipVerify: true,
@@ -195,14 +247,7 @@ func (t *transport) getConn(ctx context.Context, c Contact) (*quic.Conn, error) 
 	if err != nil {
 		return nil, err
 	}
-	conn, err = t.qt.Dial(ctx, addr, tlsClient, quicConf)
-	if err != nil {
-		return nil, err
-	}
-	t.mu.Lock()
-	t.conns[c.Addr] = conn
-	t.mu.Unlock()
-	return conn, nil
+	return t.qt.Dial(ctx, addr, tlsClient, quicConf)
 }
 
 func (t *transport) dropConn(addr string) {
@@ -300,5 +345,5 @@ func nodeIDFromPublicKey(pub any) (ID, error) {
 	if err != nil {
 		return ID{}, err
 	}
-	return ID(sha256.Sum256(spki)), nil
+	return ChunkID(spki), nil
 }

@@ -4,65 +4,45 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math/rand"
 	"net"
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
 	k           = 20 // bucket size / redundant replica count
-	alpha       = 3  // lookup concurrency
 	rpcTimeout  = 5 * time.Second
-	valueTTL    = time.Hour
 	providerTTL = 30 * time.Minute
+	concurrency = 10
 )
 
-type valueEntry struct {
-	data []byte
-	exp  time.Time
-}
-
-type GetChunk func(id ID) ([]byte, error)
-type ValueSource func(key ID) ([]byte, bool)
+type GetValue func(id ID) ([]byte, error)
 
 type Kademlia struct {
-	t  *transport
-	rt *routingTable
+	t   *transport
+	rt  *routingTable
+	ctx context.Context
 
 	mu        sync.Mutex
-	values    map[ID]valueEntry
 	providers map[ID]map[Contact]time.Time
 
-	getChunk   GetChunk
-	localValue ValueSource
+	getValue GetValue
 }
 
-func (kad *Kademlia) SetChunkHandler(handler GetChunk) { kad.getChunk = handler }
-
-func (kad *Kademlia) SetValueSource(f ValueSource) { kad.localValue = f }
-
-// Check the DHT storage first, and falls back to the injected local value source on a miss.
-func (kad *Kademlia) getValueOrLocal(k ID) ([]byte, bool) {
-	if v, ok := kad.getValue(k); ok {
-		return v, true
-	}
-	if kad.localValue != nil {
-		return kad.localValue(k)
-	}
-	return nil, false
-}
-
-func StartKademlia(listenAddr, certDir string, ctx context.Context) (*Kademlia, error) {
-	t, err := startTransport(listenAddr, certDir, ctx)
+func StartKademlia(listenAddr, dataDir string, valueHandler GetValue, ctx context.Context) (*Kademlia, error) {
+	t, err := startTransport(listenAddr, dataDir, ctx)
 	if err != nil {
 		return nil, err
 	}
 	kad := &Kademlia{
 		t:         t,
 		rt:        newRoutingTable(t, k),
-		values:    make(map[ID]valueEntry),
+		ctx:       ctx,
+		getValue:  valueHandler,
 		providers: make(map[ID]map[Contact]time.Time),
 	}
 	t.setHandler(kad.HandleRPC)
@@ -72,10 +52,6 @@ func StartKademlia(listenAddr, certDir string, ctx context.Context) (*Kademlia, 
 func (kad *Kademlia) MyID() ID { return kad.t.myID() }
 
 func (kad *Kademlia) Peers() []Contact { return kad.rt.allContacts() }
-
-func (kad *Kademlia) SendRPC(ctx context.Context, c Contact, m *Message) (*Message, error) {
-	return kad.t.send(ctx, c, m)
-}
 
 // ---------- Server: handle received RPC ----------
 
@@ -91,51 +67,22 @@ func (kad *Kademlia) HandleRPC(remote net.Addr, msg *Message) *Message {
 		resp.Type = TypePong
 	case TypeFindNode:
 		resp.Contacts = kad.rt.closest(msg.Key, k)
-	case TypeStore:
-		kad.putValue(msg.Key, msg.Value)
-	case TypeFindValue:
-		if v, ok := kad.getValueOrLocal(msg.Key); ok {
-			resp.Value, resp.Found = v, true
-		} else {
-			resp.Contacts = kad.rt.closest(msg.Key, k)
-		}
 	case TypeAddProvider:
 		kad.addProvider(msg.Key, contact)
 	case TypeGetProviders:
 		resp.Providers = kad.localProviders(msg.Key)
 		resp.Contacts = kad.rt.closest(msg.Key, k)
-	case TypeGetChunk:
-		data, err := kad.getChunk(msg.Key)
+	case TypeGetValue:
+		data, err := kad.getValue(msg.Key)
 		if err == nil {
 			resp.Value = data
 		} else {
-			resp.Error = "chunk not found"
+			resp.Error = "value not found"
 		}
 	default:
 		resp.Error = "unknown rpc"
 	}
 	return resp
-}
-
-// ---------- Local Storage ----------
-
-func (kad *Kademlia) putValue(k ID, v []byte) {
-	kad.mu.Lock()
-	kad.values[k] = valueEntry{data: v, exp: time.Now().Add(valueTTL)}
-	kad.mu.Unlock()
-}
-
-func (kad *Kademlia) getValue(k ID) ([]byte, bool) {
-	kad.mu.Lock()
-	defer kad.mu.Unlock()
-	e, ok := kad.values[k]
-	if !ok || time.Now().After(e.exp) {
-		if ok {
-			delete(kad.values, k)
-		}
-		return nil, false
-	}
-	return e.data, true
 }
 
 func (kad *Kademlia) addProvider(k ID, c Contact) {
@@ -177,15 +124,12 @@ type lookupMode int
 
 const (
 	modeFindNode lookupMode = iota
-	modeFindValue
-	modeProviders
+	modeGetProviders
 )
 
 func typeForMode(m lookupMode) string {
 	switch m {
-	case modeFindValue:
-		return TypeFindValue
-	case modeProviders:
+	case modeGetProviders:
 		return TypeGetProviders
 	case modeFindNode:
 		return TypeFindNode
@@ -196,18 +140,16 @@ func typeForMode(m lookupMode) string {
 
 type lookupOutcome struct {
 	closest   []Contact
-	value     []byte
-	found     bool
 	providers []Contact
 }
 
-func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
-	sl := newShortlist(target)
+func (kad *Kademlia) lookup(ctx context.Context, target ID, mode lookupMode) lookupOutcome {
+	sl := newShortlist(kad.MyID(), target)
 	sl.push(kad.rt.closest(target, k))
 	provs := make(map[Contact]struct{})
 
 	for {
-		batch := sl.selectAlpha(alpha)
+		batch := sl.pickNodes()
 		if len(batch) == 0 {
 			break // Convergence, closest K nodes have all been queried
 		}
@@ -218,26 +160,23 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 		}
 		ch := make(chan result, len(batch))
 		for _, c := range batch {
-			sl.setInflight(c.ID)
-			go func(c Contact) {
-				ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			sl.setInflight(c)
+			go func(arg Contact) {
+				tctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 				defer cancel()
-				resp, err := kad.t.send(ctx, c, &Message{Type: typeForMode(mode), Key: target})
-				ch <- result{c, resp, err}
+				resp, err := kad.t.send(tctx, arg, &Message{Type: typeForMode(mode), Key: target})
+				ch <- result{arg, resp, err}
 			}(c)
 		}
-		for i := 0; i < len(batch); i++ {
+		for range batch {
 			r := <-ch
 			if r.err != nil || r.msg == nil {
-				sl.markFailed(r.from.ID)
+				sl.markFailed(r.from)
 				continue
 			}
-			sl.markQueried(r.from.ID)
+			sl.markQueried(r.from)
 			kad.rt.update(r.from)
-			if mode == modeFindValue && r.msg.Found {
-				return lookupOutcome{value: r.msg.Value, found: true}
-			}
-			if mode == modeProviders {
+			if mode == modeGetProviders {
 				for _, p := range r.msg.Providers {
 					// Addr == "" indicates the requested node itself provides this file
 					if p.Addr == "" {
@@ -257,68 +196,114 @@ func (kad *Kademlia) lookup(target ID, mode lookupMode) lookupOutcome {
 
 // ---------- External DHT Operations ----------
 
-func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) error {
+func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) int {
+	var n atomic.Int32
+	n.Store(0)
+	var wg sync.WaitGroup
 	for _, c := range contacts {
-		cctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-		resp, err := kad.t.send(cctx, c, &Message{Type: TypePing})
-		cancel()
-		if err == nil && resp != nil {
-			kad.rt.update(c)
-		}
+		wg.Add(1)
+		go func(arg Contact) {
+			defer wg.Done()
+			tctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+			resp, err := kad.t.send(tctx, arg, &Message{Type: TypePing})
+			cancel()
+			if err == nil && resp != nil {
+				n.Add(1)
+				kad.rt.update(arg)
+			}
+		}(c)
 	}
-	kad.lookup(kad.MyID(), modeFindNode) // Self-lookup to populate the routing table
-	return nil
-}
-
-func (kad *Kademlia) StoreValue(key ID, value []byte) int {
-	kad.putValue(key, value)
-	out := kad.lookup(key, modeFindNode)
-	n := 0
-	for _, c := range out.closest {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		_, err := kad.t.send(ctx, c, &Message{Type: TypeStore, Key: key, Value: value})
-		cancel()
-		if err == nil {
-			n++
-		}
-	}
-	return n
-}
-
-func (kad *Kademlia) FindValue(key ID) ([]byte, bool) {
-	if v, ok := kad.getValueOrLocal(key); ok {
-		return v, true
-	}
-	out := kad.lookup(key, modeFindValue)
-	return out.value, out.found
+	wg.Wait()
+	kad.lookup(ctx, kad.MyID(), modeFindNode) // Self-lookup to populate the routing table
+	return int(n.Load())
 }
 
 func (kad *Kademlia) Announce(key ID) int {
 	// Addr: "" indicates the node itself provides this file
 	kad.addProvider(key, Contact{ID: kad.MyID(), Addr: ""})
-	out := kad.lookup(key, modeFindNode)
-	n := 0
+	out := kad.lookup(kad.ctx, key, modeFindNode)
+	var n atomic.Int32
+	n.Store(0)
+	var wg sync.WaitGroup
 	for _, c := range out.closest {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		_, err := kad.t.send(ctx, c, &Message{Type: TypeAddProvider, Key: key})
-		cancel()
-		if err == nil {
-			n++
-		}
+		wg.Add(1)
+		go func(arg Contact) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(kad.ctx, rpcTimeout)
+			_, err := kad.t.send(ctx, arg, &Message{Type: TypeAddProvider, Key: key})
+			cancel()
+			if err == nil {
+				n.Add(1)
+			}
+		}(c)
 	}
-	return n
+	wg.Wait()
+	return int(n.Load())
 }
 
-func (kad *Kademlia) FindProviders(key ID) []Contact {
+func (kad *Kademlia) findProviders(ctx context.Context, key ID) []Contact {
 	res := make(map[Contact]struct{})
 	for _, c := range kad.localProviders(key) {
 		res[c] = struct{}{}
 	}
-	out := kad.lookup(key, modeProviders)
+	out := kad.lookup(ctx, key, modeGetProviders)
 	for _, c := range out.providers {
 		res[c] = struct{}{}
 	}
+	for key := range res {
+		if key.ID == kad.MyID() {
+			delete(res, key)
+		}
+	}
 	return slices.Collect(maps.Keys(res))
+}
+
+func (kad *Kademlia) FindValue(ctx context.Context, key ID) ([]byte, error) {
+	providers := kad.findProviders(ctx, key)
+	rand.Shuffle(len(providers), func(i, j int) {
+		providers[i], providers[j] = providers[j], providers[i]
+	})
+
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	const connects = 5
+	pool := make(chan struct{}, connects)
+	result := make(chan []byte, len(providers))
+
+	go func() {
+		for _, p := range providers {
+			select {
+			case pool <- struct{}{}:
+			case <-cctx.Done():
+				return
+			}
+
+			go func(c Contact) {
+				defer func() { <-pool }()
+				resp, err := kad.t.send(cctx, c, &Message{Type: TypeGetValue, Key: key})
+				var data []byte
+				// check hash
+				if err == nil && resp.Value != nil && ChunkID(resp.Value) == key {
+					data = resp.Value
+				} else {
+					data = nil
+				}
+				result <- data
+			}(p)
+		}
+	}()
+
+	for range providers {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case data := <-result:
+			if data != nil {
+				return data, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%s is not found in DHT", key.String())
 }
 
 // ---------- shortlist: Candidate Set for Iterative Lookup ----------
@@ -337,25 +322,26 @@ type slItem struct {
 }
 
 type shortlist struct {
+	myid   ID
 	target ID
 	items  []*slItem
-	seen   map[ID]*slItem
+	seen   map[Contact]*slItem
 }
 
-func newShortlist(target ID) *shortlist {
-	return &shortlist{target: target, seen: make(map[ID]*slItem)}
+func newShortlist(myid, target ID) *shortlist {
+	return &shortlist{myid: myid, target: target, seen: make(map[Contact]*slItem)}
 }
 
 func (s *shortlist) push(cs []Contact) {
 	for _, c := range cs {
-		if c.Addr == "" || c.ID.isZero() {
+		if c.ID == s.myid || c.Addr == "" || c.ID.isZero() {
 			continue
 		}
-		if _, ok := s.seen[c.ID]; ok {
+		if _, ok := s.seen[c]; ok {
 			continue
 		}
 		it := &slItem{c: c, dist: s.target.xor(c.ID), state: stPending}
-		s.seen[c.ID] = it
+		s.seen[c] = it
 		s.items = append(s.items, it)
 	}
 }
@@ -365,7 +351,7 @@ func (s *shortlist) sortItems() {
 }
 
 // Pick up to a pending query nodes within the "closest K non-failed nodes" window.
-func (s *shortlist) selectAlpha(a int) []Contact {
+func (s *shortlist) pickNodes() []Contact {
 	s.sortItems()
 	var out []Contact
 	window := 0
@@ -379,7 +365,7 @@ func (s *shortlist) selectAlpha(a int) []Contact {
 		}
 		if it.state == stPending {
 			out = append(out, it.c)
-			if len(out) >= a {
+			if len(out) >= concurrency {
 				break
 			}
 		}
@@ -387,18 +373,18 @@ func (s *shortlist) selectAlpha(a int) []Contact {
 	return out
 }
 
-func (s *shortlist) setInflight(id ID) {
-	if it, ok := s.seen[id]; ok {
+func (s *shortlist) setInflight(c Contact) {
+	if it, ok := s.seen[c]; ok {
 		it.state = stInflight
 	}
 }
-func (s *shortlist) markQueried(id ID) {
-	if it, ok := s.seen[id]; ok {
+func (s *shortlist) markQueried(c Contact) {
+	if it, ok := s.seen[c]; ok {
 		it.state = stQueried
 	}
 }
-func (s *shortlist) markFailed(id ID) {
-	if it, ok := s.seen[id]; ok {
+func (s *shortlist) markFailed(c Contact) {
+	if it, ok := s.seen[c]; ok {
 		it.state = stFailed
 	}
 }

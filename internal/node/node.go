@@ -3,10 +3,8 @@ package node
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,7 +12,11 @@ import (
 	"p2pshare/internal/dht"
 )
 
-const defaultChunkSize = 256 * 1024
+const (
+	minChunkSize = 1 << 14 // 16 KiB
+	maxChunkSize = 1 << 20 // 1 MiB
+	concurrency  = 10
+)
 
 // Node combines Kademlia DHT with file storage/transfer.
 type Node struct {
@@ -28,32 +30,20 @@ func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	certDir := filepath.Join(dataDir, "identity")
-	kad, err := dht.StartKademlia(listenAddr, certDir, ctx)
+	kad, err := dht.StartKademlia(listenAddr, dataDir, store.GetChunk, ctx)
 	if err != nil {
 		return nil, err
 	}
-	kad.SetChunkHandler(store.GetChunk)
+	node := &Node{kad: kad, store: store}
+	node.startRepublish(ctx, 15*time.Minute)
 
-	// When FIND_VALUE misses the DHT cache, return manifest from local file store.
-	// This allows any node holding the file to respond to the manifest request, instead of only the K nodes closest to fileID.
-	kad.SetValueSource(func(key dht.ID) ([]byte, bool) {
-		if m, ok := store.GetManifest(key); ok {
-			if b, err := json.Marshal(m); err == nil {
-				return b, true
-			}
-		}
-		return nil, false
-	})
-
-	n := &Node{kad: kad, store: store}
-	return n, nil
+	return node, nil
 }
 
-func (n *Node) MyID() dht.ID           { return n.kad.MyID() }
-func (n *Node) Peers() []dht.Contact   { return n.kad.Peers() }
-func (n *Node) Manifests() []*Manifest { return n.store.Manifests() }
-func (n *Node) Bootstrap(ctx context.Context, contacts []dht.Contact) error {
+func (n *Node) MyID() dht.ID                    { return n.kad.MyID() }
+func (n *Node) Peers() []dht.Contact            { return n.kad.Peers() }
+func (n *Node) Manifests() map[dht.ID]*Manifest { return n.store.Manifests() }
+func (n *Node) Bootstrap(ctx context.Context, contacts []dht.Contact) int {
 	return n.kad.Bootstrap(ctx, contacts)
 }
 
@@ -73,17 +63,19 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 	}
 
 	var chunks []dht.ID
-	buf := make([]byte, defaultChunkSize)
+	chunkSize := min(max(fi.Size()/10, minChunkSize), maxChunkSize)
+	buf := make([]byte, chunkSize)
 	for {
 		nr, rerr := io.ReadFull(f, buf)
 		if nr > 0 {
 			data := make([]byte, nr)
 			copy(data, buf[:nr])
-			id := ChunkID(data)
+			id := dht.ChunkID(data)
 			if err := n.store.PutChunk(id, data); err != nil {
 				return dht.ID{}, nil, err
 			}
 			chunks = append(chunks, id)
+			go n.kad.Announce(id)
 		}
 		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
 			break
@@ -93,42 +85,108 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 		}
 	}
 
-	m := &Manifest{Name: filepath.Base(path), Size: fi.Size(), ChunkSize: defaultChunkSize, Chunks: chunks}
-	fh := m.FileID()
-	n.store.AddManifest(m)
+	manifest := &Manifest{
+		Name:      filepath.Base(path),
+		Size:      fi.Size(),
+		ChunkSize: chunkSize,
+		Chunks:    chunks,
+	}
+	mb, err := json.Marshal(manifest)
+	if err != nil {
+		return dht.ID{}, nil, err
+	}
+	fid := dht.ChunkID(mb)
+	if err := n.store.PutChunk(fid, mb); err != nil {
+		return dht.ID{}, nil, err
+	}
+	go n.kad.Announce(fid)
+	if err := n.store.AddManifest(fid, manifest); err != nil {
+		return dht.ID{}, nil, err
+	}
+	return fid, manifest, nil
+}
 
-	mb, _ := json.Marshal(m)
-	n.kad.StoreValue(fh, mb)
-	n.kad.Announce(fh)
-	return fh, m, nil
+func (n *Node) getChunk(ctx context.Context, id dht.ID) ([]byte, error) {
+	data, err := n.store.GetChunk(id)
+	if err != nil {
+		if data, err = n.kad.FindValue(ctx, id); err != nil {
+			return nil, err
+		}
+		// store the downloaded chunck and announce it
+		if err := n.store.PutChunk(id, data); err != nil {
+			return nil, err
+		}
+		go n.kad.Announce(id)
+	}
+	return data, nil
+}
+
+func (n *Node) getManifest(ctx context.Context, id dht.ID) (*Manifest, error) {
+	if m, ok := n.store.GetManifest(id); ok {
+		return m, nil
+	}
+	mb, err := n.getChunk(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(mb, &manifest); err != nil {
+		return nil, fmt.Errorf("%s is not a valid file ID", id.String())
+	}
+	return &manifest, nil
 }
 
 // Download restores the file to outdir based on fileID.
 func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (string, error) {
-	var m Manifest
-	if mm, ok := n.store.GetManifest(fileID); ok {
-		m = *mm
-	} else {
-		data, ok := n.kad.FindValue(fileID)
-		if !ok {
-			return "", errors.New("manifest not found in DHT")
-		}
-		if err := json.Unmarshal(data, &m); err != nil {
-			return "", err
-		}
+	// get the manifest
+	m, err := n.getManifest(ctx, fileID)
+	if err != nil {
+		return "", err
 	}
 
-	providers := n.kad.FindProviders(fileID)
-	if len(providers) == 0 {
-		return "", errors.New("no providers found for this file")
-	}
-	rand.Shuffle(len(providers), func(i, j int) { providers[i], providers[j] = providers[j], providers[i] })
+	// get chunks
+	pool := make(chan struct{}, concurrency)
+	result := make(chan error, len(m.Chunks))
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		for _, cid := range m.Chunks {
+			select {
+			case pool <- struct{}{}:
+			case <-cctx.Done():
+				return
+			}
 
+			go func(id dht.ID) {
+				defer func() { <-pool }()
+				// We do not need the data of the return value,
+				// because the chunk is saved to disk by getChunk.
+				// We assemble the file after all chunks are downloaded.
+				_, err := n.getChunk(cctx, id)
+				result <- err
+			}(cid)
+		}
+	}()
+
+	for range m.Chunks {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case err := <-result:
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	n.store.AddManifest(fileID, m)
+
+	// assemble the file
 	outdir = filepath.Clean(outdir)
 	if err := os.MkdirAll(outdir, 0o777); err != nil {
 		return "", err
 	}
-	f, err := os.Create(filepath.Join(outdir, m.Name))
+	tempName := m.Name + ".temp"
+	f, err := os.Create(filepath.Join(outdir, tempName))
 	if err != nil {
 		return "", err
 	}
@@ -136,61 +194,30 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 	if err := f.Truncate(m.Size); err != nil {
 		return "", err
 	}
-
-	for i, cid := range m.Chunks {
-		offset := int64(i) * int64(m.ChunkSize)
-		if n.store.HasChunk(cid) {
-			data, _ := n.store.GetChunk(cid)
-			if _, err := f.WriteAt(data, offset); err != nil {
-				return "", err
-			}
-			continue
-		}
-		var got []byte
-		for _, p := range providers {
-			value := []byte{}
-			if p.ID == n.kad.MyID() {
-				data, err := n.store.GetChunk(cid)
-				if err != nil {
-					continue
-				}
-				value = data
-			} else {
-				cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				resp, rerr := n.kad.SendRPC(cctx, p, &dht.Message{Type: dht.TypeGetChunk, Key: cid})
-				cancel()
-				if rerr != nil || resp == nil || resp.Error != "" {
-					continue
-				}
-				value = resp.Value
-			}
-			if ChunkID(value) != cid { // Integrity verification
-				continue
-			}
-			got = value
-			break
-		}
-		if got == nil {
-			return "", fmt.Errorf("failed to fetch chunk %d/%d", i+1, len(m.Chunks))
-		}
-		if err := n.store.PutChunk(cid, got); err != nil {
+	for _, cid := range m.Chunks {
+		data, err := n.store.GetChunk(cid)
+		if err != nil {
 			return "", err
 		}
-		if _, err := f.WriteAt(got, offset); err != nil {
+		if _, err := f.Write(data); err != nil {
 			return "", err
 		}
 	}
+	// Windows does not allow to rename an opened file
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(filepath.Join(outdir, tempName), filepath.Join(outdir, m.Name)); err != nil {
+		return "", err
+	}
 
-	n.store.AddManifest(&m)
-	mb, _ := json.Marshal(&m)
-	n.kad.StoreValue(fileID, mb) // Participate in the redistribution of the manifest
-	n.kad.Announce(fileID)       // Announce self as provider
 	return m.Name, nil
 }
 
-// StartRepublish periodically publishes all local file manifests and provider records back to the DHT.
-// interval should be significantly smaller than valueTTL (1h) and providerTTL (30m), 15 minutes is recommended.
-func (n *Node) StartRepublish(ctx context.Context, interval time.Duration) {
+// startRepublish periodically publishes all local chunks to the DHT.
+// interval should be significantly smaller than providerTTL (30m), 15 minutes is recommended.
+func (n *Node) startRepublish(ctx context.Context, interval time.Duration) {
+	n.republish()
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -206,10 +233,7 @@ func (n *Node) StartRepublish(ctx context.Context, interval time.Duration) {
 }
 
 func (n *Node) republish() {
-	for _, m := range n.store.Manifests() {
-		fh := m.FileID()
-		mb, _ := json.Marshal(&m)
-		n.kad.StoreValue(fh, mb)
-		n.kad.Announce(fh)
+	for _, cid := range n.store.Chunks() {
+		go n.kad.Announce(cid)
 	}
 }
