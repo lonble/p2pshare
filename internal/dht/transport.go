@@ -19,7 +19,11 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-const alpn = "p2pshare/1.0"
+const (
+	alpn          = "p2pshare/1.0"
+	streamTimeout = 30 * time.Second
+	rpcTimeout    = 5 * time.Second
+)
 
 // handler processes received requests and returns a response.
 type handler func(remote net.Addr, msg *Message) *Message
@@ -54,7 +58,7 @@ var quicConf = &quic.Config{
 }
 
 // Initialize certificates, generate the Node ID, and listen on the DHT network.
-func startTransport(listenAddr, dataDir string, ctx context.Context) (*transport, error) {
+func startTransport(ctx context.Context, listenAddr, dataDir string) (*transport, error) {
 	certDir := filepath.Join(dataDir, "identity")
 	cert, myid, err := loadOrCreateIdentity(certDir)
 	if err != nil {
@@ -103,14 +107,27 @@ func (t *transport) serveConn(ctx context.Context, conn *quic.Conn) {
 		if err != nil {
 			return
 		}
-		go t.serveStream(conn, stream)
+		go t.serveStream(ctx, conn, stream)
 	}
 }
 
-func (t *transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
+func (t *transport) serveStream(ctx context.Context, conn *quic.Conn, stream *quic.Stream) {
 	defer stream.CancelRead(0)
 	defer stream.Close()
-	stream.SetDeadline(time.Now().Add(30 * time.Second))
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			stream.CancelRead(quic.StreamErrorCode(1))
+			stream.CancelWrite(quic.StreamErrorCode(1))
+		case <-done:
+		}
+	}()
+
+	stream.SetDeadline(time.Now().Add(streamTimeout))
+
 	req, err := readMsg(stream)
 	if err != nil {
 		return
@@ -129,6 +146,10 @@ func (t *transport) serveStream(conn *quic.Conn, stream *quic.Stream) {
 // send initiates a request to addr and waits for a response.
 func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message, error) {
 	msg.Sender = t.myid
+
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
 	conn, err := t.getConn(ctx, c)
 	if err != nil {
 		return nil, err
@@ -158,9 +179,6 @@ func (t *transport) send(ctx context.Context, c Contact, msg *Message) (*Message
 		}
 	}()
 
-	if dl, ok := ctx.Deadline(); ok {
-		stream.SetDeadline(dl)
-	}
 	if err := writeMsg(stream, msg); err != nil {
 		return nil, err
 	}

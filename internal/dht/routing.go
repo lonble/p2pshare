@@ -15,12 +15,13 @@ type peerEntry struct {
 type routingTable struct {
 	t       *transport
 	k       int
+	ctx     context.Context
 	mu      sync.RWMutex
 	buckets [256][]*peerEntry // index = leading zeros of XOR distance from myid
 }
 
-func newRoutingTable(t *transport, k int) *routingTable {
-	return &routingTable{t: t, k: k}
+func newRoutingTable(ctx context.Context, t *transport, k int) *routingTable {
+	return &routingTable{t: t, k: k, ctx: ctx}
 }
 
 func (rt *routingTable) bucketIndex(key ID) int {
@@ -73,9 +74,7 @@ func (rt *routingTable) update(c Contact) {
 }
 
 func (rt *routingTable) tryReplace(idx int, oldest *peerEntry, cand Contact) {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-	defer cancel()
-	resp, err := rt.t.send(ctx, oldest.contact, &Message{Type: TypePing})
+	resp, err := rt.t.send(rt.ctx, oldest.contact, &Message{Type: TypePing})
 	alive := err == nil && resp != nil
 
 	rt.mu.Lock()

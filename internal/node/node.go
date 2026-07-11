@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	minChunkSize = 1 << 14 // 16 KiB
-	maxChunkSize = 1 << 20 // 1 MiB
-	concurrency  = 10
+	minChunkSize      = 1 << 14 // 16 KiB
+	maxChunkSize      = 1 << 20 // 1 MiB
+	concurrency       = 10
+	republishInterval = 30 * time.Second
 )
 
 // Node combines Kademlia DHT with file storage/transfer.
@@ -25,17 +26,17 @@ type Node struct {
 }
 
 // Create a node and start the DHT network.
-func StartNode(listenAddr, dataDir string, ctx context.Context) (*Node, error) {
+func StartNode(ctx context.Context, listenAddr, dataDir string) (*Node, error) {
 	store, err := NewStore(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	kad, err := dht.StartKademlia(listenAddr, dataDir, store.GetChunk, ctx)
+	kad, err := dht.StartKademlia(ctx, listenAddr, dataDir, store.GetChunk)
 	if err != nil {
 		return nil, err
 	}
 	node := &Node{kad: kad, store: store}
-	node.startRepublish(ctx, 15*time.Minute)
+	node.startRepublish(ctx, republishInterval)
 
 	return node, nil
 }
@@ -215,7 +216,7 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 }
 
 // startRepublish periodically publishes all local chunks to the DHT.
-// interval should be significantly smaller than providerTTL (30m), 15 minutes is recommended.
+// interval should be significantly smaller than providerTTL (30m)
 func (n *Node) startRepublish(ctx context.Context, interval time.Duration) {
 	n.republish()
 	go func() {

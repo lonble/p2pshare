@@ -15,7 +15,6 @@ import (
 
 const (
 	k           = 20 // bucket size / redundant replica count
-	rpcTimeout  = 5 * time.Second
 	providerTTL = 30 * time.Minute
 	concurrency = 10
 )
@@ -33,14 +32,14 @@ type Kademlia struct {
 	getValue GetValue
 }
 
-func StartKademlia(listenAddr, dataDir string, valueHandler GetValue, ctx context.Context) (*Kademlia, error) {
-	t, err := startTransport(listenAddr, dataDir, ctx)
+func StartKademlia(ctx context.Context, listenAddr, dataDir string, valueHandler GetValue) (*Kademlia, error) {
+	t, err := startTransport(ctx, listenAddr, dataDir)
 	if err != nil {
 		return nil, err
 	}
 	kad := &Kademlia{
 		t:         t,
-		rt:        newRoutingTable(t, k),
+		rt:        newRoutingTable(ctx, t, k),
 		ctx:       ctx,
 		getValue:  valueHandler,
 		providers: make(map[ID]map[Contact]time.Time),
@@ -162,9 +161,7 @@ func (kad *Kademlia) lookup(ctx context.Context, target ID, mode lookupMode) loo
 		for _, c := range batch {
 			sl.setInflight(c)
 			go func(arg Contact) {
-				tctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-				defer cancel()
-				resp, err := kad.t.send(tctx, arg, &Message{Type: typeForMode(mode), Key: target})
+				resp, err := kad.t.send(ctx, arg, &Message{Type: typeForMode(mode), Key: target})
 				ch <- result{arg, resp, err}
 			}(c)
 		}
@@ -204,9 +201,7 @@ func (kad *Kademlia) Bootstrap(ctx context.Context, contacts []Contact) int {
 		wg.Add(1)
 		go func(arg Contact) {
 			defer wg.Done()
-			tctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-			resp, err := kad.t.send(tctx, arg, &Message{Type: TypePing})
-			cancel()
+			resp, err := kad.t.send(ctx, arg, &Message{Type: TypePing})
 			if err == nil && resp != nil {
 				n.Add(1)
 				kad.rt.update(arg)
@@ -229,9 +224,7 @@ func (kad *Kademlia) Announce(key ID) int {
 		wg.Add(1)
 		go func(arg Contact) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(kad.ctx, rpcTimeout)
-			_, err := kad.t.send(ctx, arg, &Message{Type: TypeAddProvider, Key: key})
-			cancel()
+			_, err := kad.t.send(kad.ctx, arg, &Message{Type: TypeAddProvider, Key: key})
 			if err == nil {
 				n.Add(1)
 			}
@@ -266,7 +259,7 @@ func (kad *Kademlia) FindValue(ctx context.Context, key ID) ([]byte, error) {
 
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	const connects = 5
+	const connects = 3
 	pool := make(chan struct{}, connects)
 	result := make(chan []byte, len(providers))
 

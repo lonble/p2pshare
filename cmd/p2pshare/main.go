@@ -21,7 +21,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	n, err := node.StartNode(*addr, *dataDir, ctx)
+	n, err := node.StartNode(ctx, *addr, *dataDir)
 	if err != nil {
 		log.Fatalf("create node: %v", err)
 	}
