@@ -1,2 +1,1 @@
-- Write a cmd client in the current codebase as a fallback
 - Create asynchronous versions of operations like publish and download
