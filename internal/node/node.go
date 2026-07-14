@@ -14,12 +14,10 @@ import (
 )
 
 const (
-	minChunkSize = 1 << 14 // 16 KiB
-	maxChunkSize = 1 << 20 // 1 MiB
-	concurrency  = 10
-	// one cycle is occasionally delayed. A third of the TTL is the common
-	// rule of thumb for this kind of soft-state refresh.
-	republishInterval = 10 * time.Minute
+	minChunkSize      = 1 << 14 // 16 KiB
+	maxChunkSize      = 1 << 20 // 1 MiB
+	concurrency       = 10
+	republishInterval = 30 * time.Second
 )
 
 type ProgressFunc func(done, total int)
