@@ -1,5 +1,5 @@
 
-export const RPC_URL = import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8000/'
+export const RPC_URL = import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8001/'
 
 export class RpcError extends Error {
   code: number

@@ -1,0 +1,81 @@
+# One-command demo swarm: `docker compose up --build`
+#
+# node1 is the seed; node2/node3/node4 auto-bootstrap against it on startup
+# (see deploy/entrypoint.sh). Every node's RPC is published to a distinct
+# host port so you can point the frontend (VITE_RPC_URL) or `p2pc -api` at
+# whichever node you want to demo with.
+#
+# Live-failure demo: `docker compose kill node3` mid-download, then
+# `docker compose start node3` to bring it back - data survives (manifests
+# are persisted to the named volume).
+#
+# Add more participants by copy-pasting a nodeN block: bump the host ports
+# and the volume name, keep BOOTSTRAP_HOST=node1.
+
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      QUIC_ADDR: ":9000"
+      RPC_ADDR: "0.0.0.0:8000"
+    ports:
+      - "8001:8000" # JSON-RPC -> http://localhost:8001/
+      - "9001:9000/udp"
+    volumes:
+      - node1-data:/data
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      QUIC_ADDR: ":9000"
+      RPC_ADDR: "0.0.0.0:8000"
+      BOOTSTRAP_HOST: node1
+    ports:
+      - "8002:8000"
+      - "9002:9000/udp"
+    volumes:
+      - node2-data:/data
+    depends_on:
+      - node1
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      QUIC_ADDR: ":9000"
+      RPC_ADDR: "0.0.0.0:8000"
+      BOOTSTRAP_HOST: node1
+    ports:
+      - "8003:8000"
+      - "9003:9000/udp"
+    volumes:
+      - node3-data:/data
+    depends_on:
+      - node1
+
+  node4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      QUIC_ADDR: ":9000"
+      RPC_ADDR: "0.0.0.0:8000"
+      BOOTSTRAP_HOST: node1
+    ports:
+      - "8004:8000"
+      - "9004:9000/udp"
+    volumes:
+      - node4-data:/data
+    depends_on:
+      - node1
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
