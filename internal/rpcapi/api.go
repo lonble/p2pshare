@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	MethodStatus    = "status"
-	MethodPeers     = "peers"
-	MethodListFiles = "listFiles"
-	MethodPublish   = "publish"
-	MethodDownload  = "download"
-	MethodBootstrap = "bootstrap"
+	MethodStatus          = "status"
+	MethodPeers           = "peers"
+	MethodListFiles       = "listFiles"
+	MethodPublish         = "publish"
+	MethodPublishFrontend = "publishFrontend"
+	MethodDownload        = "download"
+	MethodBootstrap       = "bootstrap"
 )
 
 type RpcRequest struct {
@@ -56,6 +57,11 @@ type ListFilesResultEntry struct {
 
 type PublishParams struct {
 	Path string `json:"path"`
+}
+
+type PublishParamsFront struct {
+	Name string `json:"name"`
+	Data []byte `json:"data"`
 }
 
 type PublishResult struct {

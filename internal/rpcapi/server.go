@@ -40,6 +40,8 @@ func newRpcError(code RpcErrorCode, msg string) *RpcError {
 
 func New(n *node.Node) *Server { return &Server{node: n} }
 
+const maxUploadSize = 500 << 20
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -51,6 +53,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST Only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize/3*4+1<<20)
 
 	var req RpcRequest
 	resp := &RpcResponse{JSONRPC: "2.0"}
@@ -107,7 +110,26 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		if err := json.Unmarshal(params, &p); err != nil || p.Path == "" {
 			return nil, newRpcError(rpcInvalidParams, "need {path}")
 		}
-		fh, m, err := s.node.Publish(p.Path)
+		fh, m, err := s.node.Publish(p.Path, nil)
+		if err != nil {
+			return nil, newRpcError(rpcServerError, err.Error())
+		}
+		return &PublishResult{ID: fh, Manifest: m}, nil
+
+	case MethodPublishFrontend:
+		var p PublishParamsFront
+		if err := json.Unmarshal(params, &p); err != nil || p.Name == "" || len(p.Data) == 0 {
+			return nil, newRpcError(rpcInvalidParams, "need {name, data}")
+		}
+		if len(p.Data) > maxUploadSize {
+			return nil, newRpcError(rpcInvalidParams, "file exceeds the 500 MiB upload limit")
+		}
+		path, cleanup, err := s.node.SaveUpload(p.Name, p.Data)
+		if err != nil {
+			return nil, newRpcError(rpcServerError, err.Error())
+		}
+		defer cleanup()
+		fh, m, err := s.node.Publish(path, nil)
 		if err != nil {
 			return nil, newRpcError(rpcServerError, err.Error())
 		}
@@ -118,12 +140,11 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, newRpcError(rpcInvalidParams, "need {id, outdir}")
 		}
-		filename, err := s.node.Download(ctx, p.ID, p.OutDir)
+		filename, err := s.node.Download(ctx, p.ID, p.OutDir, nil)
 		if err != nil {
 			return nil, newRpcError(rpcServerError, err.Error())
 		}
 		return &DownloadResult{OK: true, Output: filepath.Join(p.OutDir, filename)}, nil
-
 	case MethodBootstrap:
 		var p BootstrapParams
 		if err := json.Unmarshal(params, &p); err != nil {

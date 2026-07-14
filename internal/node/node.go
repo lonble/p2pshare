@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,10 +20,13 @@ const (
 	republishInterval = 30 * time.Second
 )
 
+type ProgressFunc func(done, total int)
+
 // Node combines Kademlia DHT with file storage/transfer.
 type Node struct {
-	kad   *dht.Kademlia
-	store *Store
+	kad     *dht.Kademlia
+	store   *Store
+	dataDir string
 }
 
 // Create a node and start the DHT network.
@@ -35,7 +39,7 @@ func StartNode(ctx context.Context, listenAddr, dataDir string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	node := &Node{kad: kad, store: store}
+	node := &Node{kad: kad, store: store, dataDir: dataDir}
 	node.startRepublish(ctx, republishInterval)
 
 	return node, nil
@@ -48,8 +52,7 @@ func (n *Node) Bootstrap(ctx context.Context, contacts []dht.Contact) int {
 	return n.kad.Bootstrap(ctx, contacts)
 }
 
-// Publish splits the file, stores it, saves the Manifest to the DHT, and announces provider.
-func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
+func (n *Node) Publish(path string, progress ProgressFunc) (dht.ID, *Manifest, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return dht.ID{}, nil, err
@@ -63,8 +66,10 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 		return dht.ID{}, nil, fmt.Errorf("%s is not a regular file", path)
 	}
 
-	var chunks []dht.ID
 	chunkSize := min(max(fi.Size()/10, minChunkSize), maxChunkSize)
+	total := int((fi.Size() + chunkSize - 1) / chunkSize)
+
+	var chunks []dht.ID
 	buf := make([]byte, chunkSize)
 	for {
 		nr, rerr := io.ReadFull(f, buf)
@@ -77,6 +82,9 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 			}
 			chunks = append(chunks, id)
 			go n.kad.Announce(id)
+			if progress != nil {
+				progress(len(chunks), total)
+			}
 		}
 		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
 			break
@@ -105,6 +113,34 @@ func (n *Node) Publish(path string) (dht.ID, *Manifest, error) {
 		return dht.ID{}, nil, err
 	}
 	return fid, manifest, nil
+}
+
+func (n *Node) SaveUpload(name string, data []byte) (path string, cleanup func(), err error) {
+	name = filepath.Base(filepath.Clean(name))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "", nil, fmt.Errorf("invalid file name")
+	}
+
+	dir := filepath.Join(n.dataDir, "uploads", newUploadID())
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+
+	path = filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o666); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+func newUploadID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func (n *Node) getChunk(ctx context.Context, id dht.ID) ([]byte, error) {
@@ -137,8 +173,7 @@ func (n *Node) getManifest(ctx context.Context, id dht.ID) (*Manifest, error) {
 	return &manifest, nil
 }
 
-// Download restores the file to outdir based on fileID.
-func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (string, error) {
+func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string, progress ProgressFunc) (string, error) {
 	// get the manifest
 	m, err := n.getManifest(ctx, fileID)
 	if err != nil {
@@ -146,6 +181,8 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 	}
 
 	// get chunks
+	total := len(m.Chunks)
+	done := 0
 	pool := make(chan struct{}, concurrency)
 	result := make(chan error, len(m.Chunks))
 	cctx, cancel := context.WithCancel(ctx)
@@ -177,9 +214,15 @@ func (n *Node) Download(ctx context.Context, fileID dht.ID, outdir string) (stri
 			if err != nil {
 				return "", err
 			}
+			done++
+			if progress != nil {
+				progress(done, total)
+			}
 		}
 	}
-	n.store.AddManifest(fileID, m)
+	if err := n.store.AddManifest(fileID, m); err != nil {
+		return "", err
+	}
 
 	// assemble the file
 	outdir = filepath.Clean(outdir)
